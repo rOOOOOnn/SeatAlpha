@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from config import SYMBOL_META
+from i18n import instrument_name, sector_name, signal_name
 
 INK = "#17222b"
 MUTED = "#73808a"
@@ -127,7 +128,7 @@ def _marker(value: float, low: float, high: float, color: str) -> str:
     return f'<span class="scale-dot" style="left:{position:.1f}%;background:{color}"></span>'
 
 
-def sector_cards(snapshot: pd.DataFrame) -> str:
+def sector_cards(snapshot: pd.DataFrame, lang: str = "zh") -> str:
     cards = []
     for sector, group in snapshot.groupby("sector", sort=True):
         ratio = float(group["net_position_ratio"].mean() * 100)
@@ -135,16 +136,22 @@ def sector_cards(snapshot: pd.DataFrame) -> str:
         consensus = float(group["consensus"].mean() * 100)
         strongest = group.loc[group["bull_score"].idxmax(), "symbol"]
         weakest = group.loc[group["bull_score"].idxmin(), "symbol"]
+        sector_label = sector_name(sector, lang)
+        count_label = f"{len(group)} instruments · Strong {strongest} / Weak {weakest}" if lang == "en" else f"{len(group)} 个品种 · 强 {strongest} / 弱 {weakest}"
+        net_label, change_label, consistency_label = (
+            ("Net", "Change", "Consensus") if lang == "en" else ("净仓", "变化", "一致性")
+        )
+        change_suffix = "10k" if lang == "en" else "万"
         cards.append(
             '<div class="sector-card">'
-            f'<div><h3>{escape(sector)}</h3><small>{len(group)} 个品种 · 强 {strongest} / 弱 {weakest}</small></div>'
+            f'<div><h3>{escape(sector_label)}</h3><small>{escape(count_label)}</small></div>'
             '<div class="sector-values">'
-            f'<span>净仓<b>{signed(ratio)}</b></span><span>变化<b>{signed(change)}万</b></span>'
-            f'<span>一致性<b>{signed(consensus)}</b></span></div>'
+            f'<span>{net_label}<b>{signed(ratio)}</b></span><span>{change_label}<b>{signed(change)}{change_suffix}</b></span>'
+            f'<span>{consistency_label}<b>{signed(consensus)}</b></span></div>'
             '<div class="direction-scale"><i></i>'
             f'{_marker(ratio, -15, 15, BLUE)}{_marker(change, -15, 15, GOLD)}'
             f'{_marker(consensus, -100, 100, TEAL)}</div>'
-            f'<div class="scale-legend"><span>净仓</span><span>变化</span><span>一致性</span></div></div>'
+            f'<div class="scale-legend"><span>{net_label}</span><span>{change_label}</span><span>{consistency_label}</span></div></div>'
         )
     return '<div class="sector-grid">' + "".join(cards) + "</div>"
 
@@ -163,11 +170,11 @@ def _points(values: pd.Series, width: int = 150, height: int = 34) -> str:
     return " ".join(coords)
 
 
-def sparkline_svg(position_values: pd.Series, price_values: pd.Series) -> str:
+def sparkline_svg(position_values: pd.Series, price_values: pd.Series, lang: str = "zh") -> str:
     position_points = _points(position_values)
     price_points = _points(price_values)
     if not position_points and not price_points:
-        return '<span class="muted">历史不足</span>'
+        return f'<span class="muted">{"Insufficient history" if lang == "en" else "历史不足"}</span>'
     return (
         '<svg class="spark" viewBox="0 0 150 34" preserveAspectRatio="none">'
         '<line x1="0" y1="17" x2="150" y2="17" stroke="#d9dfe2" stroke-dasharray="2 3"/>'
@@ -186,7 +193,12 @@ def _signed_bar(value: float, scale: float, color: str) -> str:
     )
 
 
-def panorama_table(snapshot: pd.DataFrame, position_history: pd.DataFrame, contracts: pd.DataFrame) -> str:
+def panorama_table(
+    snapshot: pd.DataFrame,
+    position_history: pd.DataFrame,
+    contracts: pd.DataFrame,
+    lang: str = "zh",
+) -> str:
     max_net = max(float(snapshot["net_position"].abs().max()), 1)
     max_delta = max(float(snapshot["delta_net_1d"].abs().max()), 1)
     rows = []
@@ -195,45 +207,53 @@ def panorama_table(snapshot: pd.DataFrame, position_history: pd.DataFrame, contr
         px = contracts[
             contracts["symbol"].eq(row.symbol) & contracts["source"].ne("demo") & contracts["close"].gt(0)
         ].sort_values("trade_date").drop_duplicates("trade_date", keep="last")
-        spark = sparkline_svg(ph["net_position_ratio"], px["close"])
+        spark = sparkline_svg(ph["net_position_ratio"], px["close"], lang)
         gauge_pos = float(np.clip((row.net_position_ratio + 0.15) / 0.30 * 100, 2, 98))
-        stale = f'<span class="stale">滞后 {row.stale_days} 天</span>' if row.stale_days else ""
+        stale_text = f"{row.stale_days}d stale" if lang == "en" else f"滞后 {row.stale_days} 天"
+        stale = f'<span class="stale">{stale_text}</span>' if row.stale_days else ""
+        display_name = instrument_name(row.symbol, lang, row.name)
+        display_sector = sector_name(row.sector, lang)
+        trend_key = "— Net　— Price" if lang == "en" else "— 净仓　— 价格"
+        lots_unit = "10k lots" if lang == "en" else "万手"
+        short_unit = "10k" if lang == "en" else "万"
         rows.append(
             '<div class="pano-row">'
-            f'<div class="instrument"><b>{escape(row.name)}</b><span>{row.symbol} · {escape(row.sector)}</span>{stale}</div>'
-            f'<div>{spark}<small class="spark-key">— 净仓　— 价格</small></div>'
-            f'<div class="gross"><b>{row.gross_position / 10_000:,.1f}</b><span>万手</span></div>'
+            f'<div class="instrument"><b>{escape(display_name)}</b><span>{row.symbol} · {escape(display_sector)}</span>{stale}</div>'
+            f'<div>{spark}<small class="spark-key">{trend_key}</small></div>'
+            f'<div class="gross"><b>{row.gross_position / 10_000:,.1f}</b><span>{lots_unit}</span></div>'
             '<div class="ratio-gauge"><i></i>'
             f'<span style="left:{gauge_pos:.1f}%"></span><b>{row.net_position_ratio:+.1%}</b></div>'
-            f'<div class="bar-cell">{_signed_bar(row.net_position, max_net, BLUE)}<b>{row.net_position / 10_000:+.1f}万</b></div>'
-            f'<div class="bar-cell">{_signed_bar(row.delta_net_1d, max_delta, GOLD)}<b>{row.delta_net_1d / 10_000:+.1f}万</b></div>'
-            f'<div class="consensus"><b>{row.consensus:+.0%}</b><span>{escape(row.signal)}</span></div>'
+            f'<div class="bar-cell">{_signed_bar(row.net_position, max_net, BLUE)}<b>{row.net_position / 10_000:+.1f}{short_unit}</b></div>'
+            f'<div class="bar-cell">{_signed_bar(row.delta_net_1d, max_delta, GOLD)}<b>{row.delta_net_1d / 10_000:+.1f}{short_unit}</b></div>'
+            f'<div class="consensus"><b>{row.consensus:+.0%}</b><span>{escape(signal_name(row.signal, lang))}</span></div>'
             '</div>'
         )
-    header = (
-        '<div class="pano-head"><span>核心品种</span><span>净仓 / 价格趋势</span><span>Top20体量</span>'
-        '<span>净仓强度</span><span>净持仓</span><span>当日变化</span><span>席位一致性</span></div>'
+    labels = (
+        ("Instrument", "Net / Price Trend", "Top 20 Gross", "Net Strength", "Net Position", "1-Day Change", "Consensus")
+        if lang == "en"
+        else ("核心品种", "净仓 / 价格趋势", "Top20体量", "净仓强度", "净持仓", "当日变化", "席位一致性")
     )
+    header = '<div class="pano-head">' + "".join(f"<span>{label}</span>" for label in labels) + "</div>"
     return '<div class="panorama">' + header + "".join(rows) + "</div>"
 
 
-def key_change_cards(snapshot: pd.DataFrame, limit: int = 8) -> str:
+def key_change_cards(snapshot: pd.DataFrame, limit: int = 8, lang: str = "zh") -> str:
     selected = snapshot.reindex(snapshot["net_change"].abs().sort_values(ascending=False).index).head(limit)
     scale = max(float(selected[["long_change", "short_change", "net_change"]].abs().max().max()), 1)
     cards = []
     for row in selected.itertuples(index=False):
         lines = []
-        for label, value, color in (
-            ("多头增减", row.long_change, BLUE), ("空头增减", row.short_change, GOLD), ("净变化", row.net_change, TEAL)
-        ):
+        line_labels = ("Long Change", "Short Change", "Net Change") if lang == "en" else ("多头增减", "空头增减", "净变化")
+        unit = "10k" if lang == "en" else "万"
+        for label, value, color in zip(line_labels, (row.long_change, row.short_change, row.net_change), (BLUE, GOLD, TEAL)):
             lines.append(
                 f'<div class="change-line"><span>{label}</span>{_signed_bar(value, scale, color)}'
-                f'<b>{value / 10_000:+.1f}万</b></div>'
+                f'<b>{value / 10_000:+.1f}{unit}</b></div>'
             )
         cards.append(
             '<div class="change-card">'
-            f'<h3>{escape(row.name)} <small>{row.symbol}</small></h3>'
-            f'<p>Top20 {row.gross_position / 10_000:,.1f} 万手 · {escape(row.signal)}</p>'
+            f'<h3>{escape(instrument_name(row.symbol, lang, row.name))} <small>{row.symbol}</small></h3>'
+            f'<p>Top 20 {row.gross_position / 10_000:,.1f} {"10k lots" if lang == "en" else "万手"} · {escape(signal_name(row.signal, lang))}</p>'
             + "".join(lines) + '</div>'
         )
     return '<div class="change-grid">' + "".join(cards) + "</div>"

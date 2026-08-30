@@ -20,11 +20,20 @@ from dashboard_views import (
     section_title,
     sector_cards,
 )
+from i18n import (
+    behavior_name,
+    instrument_name,
+    log_message,
+    sector_name,
+    signal_name,
+    tr,
+    update_message,
+)
 from pipeline.clean import classify_behavior
 from pipeline.seed_demo import seed
 from pipeline.update import update
 
-st.set_page_config(page_title="SeatAlpha · 机构期货持仓全景", page_icon="◇", layout="wide")
+st.set_page_config(page_title="SeatAlpha · Futures Positioning Atlas / 机构期货持仓全景", page_icon="◇", layout="wide")
 st.markdown("""
 <style>
 :root{--ink:#17222b;--muted:#73808a;--line:#dfe5e7;--paper:#fff;--wash:#f3f5f5;--blue:#426b88;--gold:#a78331;--teal:#2b7d75;--rose:#b45f6a}
@@ -99,34 +108,41 @@ for frame in (metrics, positions, contracts, position_history):
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
 
 with st.sidebar:
-    st.markdown('<div class="sidebar-brand"><b>◇ SeatAlpha</b><span>机构期货持仓研究终端</span></div>', unsafe_allow_html=True)
-    if st.button("↻ 更新公开数据", width="stretch", type="primary"):
-        with st.spinner("正在逐所更新与校验…"):
+    language_choice = st.radio("Language / 语言", ["中文", "English"], horizontal=True)
+    lang = "en" if language_choice == "English" else "zh"
+    st.markdown(
+        f'<div class="sidebar-brand"><b>◇ SeatAlpha</b><span>{tr(lang, "sidebar_subtitle")}</span></div>',
+        unsafe_allow_html=True,
+    )
+    if st.button(tr(lang, "update"), width="stretch", type="primary"):
+        with st.spinner(tr(lang, "updating")):
             st.session_state["last_update_result"] = update(force=False)
         load_data.clear()
         st.rerun()
     real_dates = sorted(metrics.loc[metrics["source"].ne("demo"), "trade_date"].dt.date.unique(), reverse=True)
-    selected_date = st.selectbox("观察日期", real_dates, index=0) if real_dates else None
+    selected_date = st.selectbox(tr(lang, "date"), real_dates, index=0) if real_dates else None
     sectors = sorted({meta[1] for meta in SYMBOL_META.values()})
-    selected_sectors = st.multiselect("品种板块", sectors, default=sectors)
-    st.caption("口径：各品种截至观察日的最新可用 Top20 席位数据。")
+    selected_sectors = st.multiselect(
+        tr(lang, "sectors"), sectors, default=sectors, format_func=lambda value: sector_name(value, lang)
+    )
+    st.caption(tr(lang, "scope_caption"))
     for exchange, message in st.session_state.get("last_update_result", {}).items():
-        st.caption(f"{exchange} · {message}")
+        st.caption(f"{exchange} · {update_message(message, lang)}")
 
 if selected_date is None:
-    st.error("没有真实数据可展示，请先更新公开数据。")
+    st.error(tr(lang, "no_real_data"))
     st.stop()
 
 snapshot = build_snapshot(metrics, positions, position_history, selected_date, selected_sectors)
 if snapshot.empty:
-    st.warning("当前日期与板块筛选下没有真实席位数据。")
+    st.warning(tr(lang, "no_filter_data"))
     st.stop()
 
 st.markdown(f"""
 <div class="report-head">
   <div><span class="report-kicker">INSTITUTIONAL POSITIONING · FUTURES ATLAS</span>
-  <h1>机构期货持仓全景</h1><p>Top20 净仓、席位一致性与关键变化的结构化扫描</p></div>
-  <div class="report-meta"><b>{selected_date:%Y.%m.%d}</b><br>品种口径：各自最新可用交易日<br>数据源：交易所公开数据 / 合规备用源</div>
+  <h1>{tr(lang, 'report_title')}</h1><p>{tr(lang, 'report_subtitle')}</p></div>
+  <div class="report-meta"><b>{selected_date:%Y.%m.%d}</b><br>{tr(lang, 'instrument_basis')}<br>{tr(lang, 'data_source')}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -134,34 +150,55 @@ strongest = snapshot.nlargest(1, "bull_score").iloc[0]
 largest_change = snapshot.loc[snapshot["delta_net_1d"].abs().idxmax()]
 stale_count = int(snapshot["stale_days"].gt(0).sum())
 total_net = float(snapshot["net_position"].sum())
+strongest_name = instrument_name(strongest["symbol"], lang, strongest["name"])
+strongest_signal = signal_name(strongest["signal"], lang)
 st.markdown(f"""
 <div class="hero-grid">
-  <div class="hero-card"><span>覆盖品种</span><b>{len(snapshot)} 个</b><small>{snapshot['sector'].nunique()} 个板块</small></div>
-  <div class="hero-card"><span>Top20 合计净仓</span><b>{total_net / 10000:+,.1f} 万手</b><small>跨品种直接加总，仅作方向观察</small></div>
-  <div class="hero-card"><span>最强综合信号</span><b>{strongest['symbol']}</b><small>{strongest['name']} · {strongest['signal']}</small></div>
-  <div class="hero-card"><span>最大单日变化</span><b>{largest_change['symbol']}</b><small>{largest_change['delta_net_1d'] / 10000:+,.1f} 万手</small></div>
-  <div class="hero-card accent"><span>数据新鲜度</span><b>{len(snapshot)-stale_count} / {len(snapshot)}</b><small>当日品种 · {stale_count} 个滞后</small></div>
+  <div class="hero-card"><span>{tr(lang, 'covered')}</span><b>{len(snapshot)} {tr(lang, 'instruments')}</b><small>{snapshot['sector'].nunique()} {tr(lang, 'sector_count')}</small></div>
+  <div class="hero-card"><span>{tr(lang, 'total_net')}</span><b>{total_net / 10000:+,.1f} {tr(lang, 'ten_thousand_lots')}</b><small>{tr(lang, 'total_note')}</small></div>
+  <div class="hero-card"><span>{tr(lang, 'strongest')}</span><b>{strongest['symbol']}</b><small>{strongest_name} · {strongest_signal}</small></div>
+  <div class="hero-card"><span>{tr(lang, 'largest_change')}</span><b>{largest_change['symbol']}</b><small>{largest_change['delta_net_1d'] / 10000:+,.1f} {tr(lang, 'ten_thousand_lots')}</small></div>
+  <div class="hero-card accent"><span>{tr(lang, 'freshness')}</span><b>{len(snapshot)-stale_count} / {len(snapshot)}</b><small>{tr(lang, 'current_count')} · {stale_count} {tr(lang, 'stale_count')}</small></div>
 </div>
 """, unsafe_allow_html=True)
 
-overview_tab, detail_tab, broker_tab, status_tab = st.tabs(["全景日报", "品种详情", "席位画像", "数据状态"])
+overview_tab, detail_tab, broker_tab, status_tab = st.tabs(
+    [tr(lang, "tab_overview"), tr(lang, "tab_detail"), tr(lang, "tab_broker"), tr(lang, "tab_status")]
+)
 
 with overview_tab:
-    st.markdown(section_title("01", "分类方向速览", "按板块汇总净仓强度、净仓变化和席位一致性"), unsafe_allow_html=True)
-    st.markdown(sector_cards(snapshot), unsafe_allow_html=True)
+    st.markdown(
+        section_title("01", tr(lang, "section_sector"), tr(lang, "section_sector_note")),
+        unsafe_allow_html=True,
+    )
+    st.markdown(sector_cards(snapshot, lang), unsafe_allow_html=True)
 
-    st.markdown(section_title("02", "机构一致性地图", "横轴为 Top20 净仓强度，纵轴为席位方向一致性；气泡为持仓体量"), unsafe_allow_html=True)
+    st.markdown(
+        section_title("02", tr(lang, "section_map"), tr(lang, "section_map_note")),
+        unsafe_allow_html=True,
+    )
     left, right = st.columns([4.5, 1.25], gap="medium")
     with left:
         chart = snapshot.copy()
-        chart["净仓强度"] = chart["net_position_ratio"] * 100
-        chart["席位一致性"] = chart["consensus"] * 100
-        fig = px.scatter(chart, x="净仓强度", y="席位一致性", size="gross_position", color="signal", text="symbol",
-                         hover_name="name", hover_data={"sector": True, "gross_position": ":,.0f", "asof_date": True,
-                                                        "净仓强度": ":+.1f", "席位一致性": ":+.1f"},
-                         color_discrete_map={"共同净多": TEAL, "共同净空": ROSE, "机构分歧": BLUE}, size_max=52)
-        x_max = max(float(chart["净仓强度"].abs().max()) * 1.25, 5)
-        y_max = max(float(chart["席位一致性"].abs().max()) * 1.25, 15)
+        x_label, y_label = tr(lang, "net_strength"), tr(lang, "consistency")
+        chart[x_label] = chart["net_position_ratio"] * 100
+        chart[y_label] = chart["consensus"] * 100
+        chart["display_name"] = [instrument_name(s, lang, n) for s, n in zip(chart["symbol"], chart["name"])]
+        chart["sector_label"] = chart["sector"].map(lambda value: sector_name(value, lang))
+        chart["signal_label"] = chart["signal"].map(lambda value: signal_name(value, lang))
+        signal_colors = {
+            signal_name("共同净多", lang): TEAL,
+            signal_name("共同净空", lang): ROSE,
+            signal_name("机构分歧", lang): BLUE,
+        }
+        fig = px.scatter(
+            chart, x=x_label, y=y_label, size="gross_position", color="signal_label", text="symbol",
+            hover_name="display_name", hover_data={"sector_label": True, "gross_position": ":,.0f", "asof_date": True,
+                                                     x_label: ":+.1f", y_label: ":+.1f", "signal_label": False},
+            color_discrete_map=signal_colors, size_max=52,
+        )
+        x_max = max(float(chart[x_label].abs().max()) * 1.25, 5)
+        y_max = max(float(chart[y_label].abs().max()) * 1.25, 15)
         for x0, x1, y0, y1, color in ((0, x_max, 0, y_max, TEAL), (-x_max, 0, -y_max, 0, ROSE),
                                       (-x_max, 0, 0, y_max, GOLD), (0, x_max, -y_max, 0, BLUE)):
             fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1, fillcolor=color, opacity=.055, line_width=0, layer="below")
@@ -169,28 +206,45 @@ with overview_tab:
         fig.add_vline(x=0, line_dash="dot", line_color="#7b858b")
         fig.update_traces(textposition="middle right", marker={"line": {"color": "#ffffff", "width": 1.5}})
         light_layout(fig, 520, legend={"orientation": "h", "y": 1.08, "title": None},
-                     xaxis_title="Top20 净持仓强度（%）", yaxis_title="席位一致性（%）")
+                     xaxis_title=tr(lang, "net_strength_axis"), yaxis_title=tr(lang, "consistency_axis"))
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     with right:
         signal_counts = snapshot["signal"].value_counts()
         st.markdown(f"""<div class="signal-summary">
-        <div class="signal-box"><span>共同净多</span><b>{signal_counts.get('共同净多', 0)} 个</b></div>
-        <div class="signal-box"><span>共同净空</span><b>{signal_counts.get('共同净空', 0)} 个</b></div>
-        <div class="signal-box wide"><span>机构分歧</span><b>{signal_counts.get('机构分歧', 0)} 个</b></div>
-        <div class="signal-box wide"><span>最大持仓体量</span><b>{snapshot.loc[snapshot['gross_position'].idxmax(),'symbol']} {snapshot['gross_position'].max()/10000:,.1f} 万手</b></div>
+        <div class="signal-box"><span>{signal_name('共同净多', lang)}</span><b>{signal_counts.get('共同净多', 0)} {tr(lang, 'instruments')}</b></div>
+        <div class="signal-box"><span>{signal_name('共同净空', lang)}</span><b>{signal_counts.get('共同净空', 0)} {tr(lang, 'instruments')}</b></div>
+        <div class="signal-box wide"><span>{signal_name('机构分歧', lang)}</span><b>{signal_counts.get('机构分歧', 0)} {tr(lang, 'instruments')}</b></div>
+        <div class="signal-box wide"><span>{tr(lang, 'max_gross')}</span><b>{snapshot.loc[snapshot['gross_position'].idxmax(),'symbol']} {snapshot['gross_position'].max()/10000:,.1f} {tr(lang, 'ten_thousand_lots')}</b></div>
         </div>""", unsafe_allow_html=True)
 
-    st.markdown(section_title("03", "核心品种全景", "蓝线为净仓强度，金线为价格；数值单位为手，按综合信号排序"), unsafe_allow_html=True)
-    st.markdown(panorama_table(snapshot, position_history, contracts), unsafe_allow_html=True)
+    st.markdown(
+        section_title("03", tr(lang, "section_panorama"), tr(lang, "section_panorama_note")),
+        unsafe_allow_html=True,
+    )
+    st.markdown(panorama_table(snapshot, position_history, contracts, lang), unsafe_allow_html=True)
 
-    st.markdown(section_title("04", "今日关键变化", "按席位净变化绝对值筛选，展示多头、空头与净变化"), unsafe_allow_html=True)
-    st.markdown(key_change_cards(snapshot), unsafe_allow_html=True)
-    stale_names = "、".join(f"{r.symbol}({r.asof_date:%m-%d})" for r in snapshot[snapshot["stale_days"].gt(0)].itertuples())
-    note = "大商所官方旧下载接口异常，DCE 使用备用源并保留真实数据日期。" if stale_names else "所有品种席位数据均为观察日当日。"
-    st.markdown(f'<div class="source-note">数据说明：{note} 滞后品种：{stale_names or "无"}。不与演示数据拼接。</div>', unsafe_allow_html=True)
+    st.markdown(
+        section_title("04", tr(lang, "section_changes"), tr(lang, "section_changes_note")),
+        unsafe_allow_html=True,
+    )
+    st.markdown(key_change_cards(snapshot, lang=lang), unsafe_allow_html=True)
+    stale_separator = ", " if lang == "en" else "、"
+    stale_names = stale_separator.join(
+        f"{r.symbol}({r.asof_date:%m-%d})" for r in snapshot[snapshot["stale_days"].gt(0)].itertuples()
+    )
+    note = tr(lang, "dce_note") if stale_names else tr(lang, "fresh_note")
+    separator = "; " if lang == "en" else "。"
+    st.markdown(
+        f'<div class="source-note">{tr(lang, "data_note")}: {note} {tr(lang, "stale_instruments")}: '
+        f'{stale_names or tr(lang, "none")}{separator}{tr(lang, "no_demo_mix")}</div>',
+        unsafe_allow_html=True,
+    )
 
 with detail_tab:
-    symbol = st.selectbox("选择品种", snapshot["symbol"].tolist(), format_func=lambda s: f"{s} · {SYMBOL_META.get(s, (s,))[0]}")
+    symbol = st.selectbox(
+        tr(lang, "select_instrument"), snapshot["symbol"].tolist(),
+        format_func=lambda s: f"{s} · {instrument_name(s, lang, SYMBOL_META.get(s, (s,))[0])}",
+    )
     row = snapshot[snapshot["symbol"].eq(symbol)].iloc[0]
     ph = position_history[(position_history["symbol"].eq(symbol)) & (position_history["trade_date"].dt.date.le(selected_date))].copy()
     ph["priority"] = ph["source"].eq("official-aggregate-via-akshare").astype(int)
@@ -198,56 +252,124 @@ with detail_tab:
     px_history = contracts[(contracts["symbol"].eq(symbol)) & contracts["source"].ne("demo") & contracts["close"].gt(0)].copy()
     px_history = px_history.sort_values(["trade_date", "open_interest"]).drop_duplicates("trade_date", keep="last")
     a, b, c, d = st.columns(4)
-    a.metric("当前净仓强度", f"{row['net_position_ratio']:+.1%}")
-    b.metric("Top20 净持仓", f"{row['net_position']:+,.0f} 手")
-    c.metric("席位一致性", f"{row['consensus']:+.0%}")
-    d.metric("席位数据日期", f"{row['asof_date']:%Y-%m-%d}")
+    a.metric(tr(lang, "current_strength"), f"{row['net_position_ratio']:+.1%}")
+    b.metric(tr(lang, "top20_net"), f"{row['net_position']:+,.0f} {tr(lang, 'lots')}")
+    c.metric(tr(lang, "consistency"), f"{row['consensus']:+.0%}")
+    d.metric(tr(lang, "position_date"), f"{row['asof_date']:%Y-%m-%d}")
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=px_history["trade_date"], y=px_history["close"], name="主力收盘价", line={"color": GOLD, "width": 2}))
+    fig.add_trace(go.Scatter(
+        x=px_history["trade_date"], y=px_history["close"], name=tr(lang, "main_close"),
+        line={"color": GOLD, "width": 2},
+    ))
     mode = "lines+markers" if len(ph) >= 2 else "markers"
-    fig.add_trace(go.Scatter(x=ph["trade_date"], y=ph["net_position_ratio"], name="Top20 净仓强度", mode=mode,
+    fig.add_trace(go.Scatter(x=ph["trade_date"], y=ph["net_position_ratio"], name=tr(lang, "top20_strength"), mode=mode,
                              yaxis="y2", line={"color": BLUE, "width": 2}, marker={"size": 8}))
-    light_layout(fig, 410, legend={"orientation": "h", "y": 1.1}, yaxis={"title": "收盘价"},
-                 yaxis2={"title": "净仓强度", "overlaying": "y", "side": "right", "tickformat": ".1%", "showgrid": False})
+    light_layout(fig, 410, legend={"orientation": "h", "y": 1.1}, yaxis={"title": tr(lang, "close")},
+                 yaxis2={"title": tr(lang, "net_strength"), "overlaying": "y", "side": "right", "tickformat": ".1%", "showgrid": False})
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     if len(ph) < 2:
-        st.info("该品种目前只有一个真实席位历史点，因此用指标和散点展示，不绘制虚假趋势线。")
+        st.info(tr(lang, "one_point"))
     pos = positions[(positions["symbol"].eq(symbol)) & positions["source"].ne("demo") &
                     (positions["trade_date"].dt.date.le(selected_date))].copy()
     if not pos.empty:
         pos = pos[pos["trade_date"].eq(pos["trade_date"].max())]
         pos["net_position"] = pos["long_position"] - pos["short_position"]
         pos["behavior"] = [classify_behavior(a, b) for a, b in zip(pos["long_change"], pos["short_change"])]
+        pos["behavior"] = pos["behavior"].map(lambda value: behavior_name(value, lang))
         x, y, z = st.columns(3)
-        x.dataframe(pos.nlargest(8, "net_position")[["broker", "net_position", "long_change"]], hide_index=True, width="stretch")
-        y.dataframe(pos.nsmallest(8, "net_position")[["broker", "net_position", "short_change"]], hide_index=True, width="stretch")
+        detail_columns = {
+            "broker": "Broker" if lang == "en" else "席位",
+            "net_position": tr(lang, "net_position"),
+            "long_change": "Long Change" if lang == "en" else "多头增减",
+            "short_change": "Short Change" if lang == "en" else "空头增减",
+            "behavior": "Behavior" if lang == "en" else "行为",
+        }
+        with x:
+            st.markdown(f"#### {tr(lang, 'net_long_top')}")
+            st.dataframe(
+                pos.nlargest(8, "net_position")[["broker", "net_position", "long_change"]].rename(columns=detail_columns),
+                hide_index=True, width="stretch",
+            )
+        with y:
+            st.markdown(f"#### {tr(lang, 'net_short_top')}")
+            st.dataframe(
+                pos.nsmallest(8, "net_position")[["broker", "net_position", "short_change"]].rename(columns=detail_columns),
+                hide_index=True, width="stretch",
+            )
         pos["activity"] = pos["long_change"].abs() + pos["short_change"].abs()
-        z.dataframe(pos.nlargest(8, "activity")[["broker", "behavior", "long_change", "short_change"]], hide_index=True, width="stretch")
+        with z:
+            st.markdown(f"#### {tr(lang, 'today_behavior')}")
+            st.dataframe(
+                pos.nlargest(8, "activity")[["broker", "behavior", "long_change", "short_change"]].rename(columns=detail_columns),
+                hide_index=True, width="stretch",
+            )
 
 with broker_tab:
     real_positions = positions[(positions["source"].ne("demo")) & (positions["trade_date"].dt.date.le(selected_date))].copy()
     real_positions["latest"] = real_positions.groupby("symbol")["trade_date"].transform("max")
     real_positions = real_positions[real_positions["trade_date"].eq(real_positions["latest"])]
-    broker = st.selectbox("选择席位", sorted(real_positions["broker"].unique()))
+    broker = st.selectbox(tr(lang, "select_broker"), sorted(real_positions["broker"].unique()))
     bp = real_positions[real_positions["broker"].eq(broker)].groupby("symbol", as_index=False).agg(
         long_position=("long_position", "sum"), short_position=("short_position", "sum"),
         long_change=("long_change", "sum"), short_change=("short_change", "sum"))
     bp["net_position"] = bp["long_position"] - bp["short_position"]
     bp["net_change"] = bp["long_change"] - bp["short_change"]
     fig = px.bar(bp.sort_values("net_position"), x="net_position", y="symbol", orientation="h",
-                 color_discrete_sequence=[BLUE], text_auto=",.0f", labels={"net_position": "净持仓", "symbol": "品种"})
+                 color_discrete_sequence=[BLUE], text_auto=",.0f",
+                 labels={"net_position": tr(lang, "net_position"), "symbol": tr(lang, "instrument")})
     light_layout(fig, max(380, len(bp) * 38), showlegend=False)
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-    st.dataframe(bp.sort_values("net_position", ascending=False), hide_index=True, width="stretch")
+    broker_columns = {
+        "symbol": tr(lang, "instrument"),
+        "long_position": "Long Position" if lang == "en" else "多头持仓",
+        "short_position": "Short Position" if lang == "en" else "空头持仓",
+        "long_change": "Long Change" if lang == "en" else "多头增减",
+        "short_change": "Short Change" if lang == "en" else "空头增减",
+        "net_position": tr(lang, "net_position"),
+        "net_change": "Net Change" if lang == "en" else "净变化",
+    }
+    st.dataframe(bp.sort_values("net_position", ascending=False).rename(columns=broker_columns), hide_index=True, width="stretch")
 
 with status_tab:
-    st.markdown(section_title("DATA", "数据血缘与更新状态", "逐交易所隔离更新，失败不会阻塞其他市场"), unsafe_allow_html=True)
+    st.markdown(
+        section_title("DATA", tr(lang, "status_title"), tr(lang, "status_note")),
+        unsafe_allow_html=True,
+    )
     if logs.empty:
-        st.info("尚无更新日志。")
+        st.info(tr(lang, "no_logs"))
     else:
-        st.dataframe(logs.sort_values("attempted_at", ascending=False).drop_duplicates("exchange"), hide_index=True, width="stretch")
-        with st.expander("完整更新日志"):
-            st.dataframe(logs, hide_index=True, width="stretch")
+        display_logs = logs.copy()
+        if lang == "en":
+            display_logs["status"] = display_logs["status"].map(
+                {"success": "Success", "failed": "Failed", "stale": "Stale"}
+            ).fillna(display_logs["status"])
+            display_logs["message"] = display_logs["message"].map(lambda value: log_message(value, lang))
+        log_columns = {
+            "attempted_at": "Attempted At" if lang == "en" else "尝试时间",
+            "trade_date": "Trade Date" if lang == "en" else "交易日",
+            "exchange": "Exchange" if lang == "en" else "交易所",
+            "status": "Status" if lang == "en" else "状态",
+            "rows_written": "Rows Written" if lang == "en" else "写入行数",
+            "message": "Message" if lang == "en" else "消息",
+            "source": "Source" if lang == "en" else "来源",
+        }
+        display_logs = display_logs.rename(columns=log_columns)
+        exchange_column = log_columns["exchange"]
+        attempted_column = log_columns["attempted_at"]
+        st.dataframe(
+            display_logs.sort_values(attempted_column, ascending=False).drop_duplicates(exchange_column),
+            hide_index=True, width="stretch",
+        )
+        with st.expander(tr(lang, "full_logs")):
+            st.dataframe(display_logs, hide_index=True, width="stretch")
     coverage = position_history.groupby(["exchange", "source"]).agg(
         first_date=("trade_date", "min"), last_date=("trade_date", "max"), symbols=("symbol", "nunique"), rows=("symbol", "size")).reset_index()
-    st.dataframe(coverage, hide_index=True, width="stretch")
+    coverage_columns = {
+        "exchange": "Exchange" if lang == "en" else "交易所",
+        "source": "Source" if lang == "en" else "来源",
+        "first_date": "First Date" if lang == "en" else "最早日期",
+        "last_date": "Last Date" if lang == "en" else "最新日期",
+        "symbols": "Instruments" if lang == "en" else "品种数",
+        "rows": "Rows" if lang == "en" else "行数",
+    }
+    st.dataframe(coverage.rename(columns=coverage_columns), hide_index=True, width="stretch")
