@@ -59,6 +59,32 @@ def broker_profile_rows(latest_positions: pd.DataFrame, broker: str) -> pd.DataF
     return profile.reset_index(drop=True)
 
 
+def select_sector_leaders(wide: pd.DataFrame, top_n: int = 2) -> pd.DataFrame:
+    """Keep each sector's most informative instruments for a readable market map."""
+    if wide.empty or top_n < 1:
+        return wide.iloc[0:0].copy()
+    result = wide.copy()
+    signal_columns = [
+        column for column in result.columns
+        if column.endswith("_signal") and pd.api.types.is_numeric_dtype(result[column])
+    ]
+    gross_columns = [
+        column for column in result.columns
+        if column.endswith(("_long_position", "_short_position"))
+        and pd.api.types.is_numeric_dtype(result[column])
+    ]
+    result["_signal_peak"] = (
+        result[signal_columns].abs().max(axis=1) if signal_columns else 0.0
+    )
+    result["_gross"] = result[gross_columns].abs().sum(axis=1) if gross_columns else 0.0
+    result = result.sort_values(
+        ["sector", "divergence_score", "_signal_peak", "_gross", "symbol"],
+        ascending=[True, False, False, False, True],
+    )
+    result = result.groupby("sector", sort=True, as_index=False).head(top_n)
+    return result.drop(columns=["_signal_peak", "_gross"])
+
+
 def build_snapshot(
     metrics: pd.DataFrame,
     positions: pd.DataFrame,

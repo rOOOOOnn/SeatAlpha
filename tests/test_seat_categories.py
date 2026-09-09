@@ -8,11 +8,17 @@ from services.position_aggregator import (
 )
 
 
-def test_aliases_and_qian_kun_are_normalized_once():
+def test_aliases_and_research_categories_are_normalized_once():
     assert normalize_broker_name(" 高盛期货（深圳） ") == "乾坤期货"
     assert normalize_broker_name("中信期货有限公司") == "中信期货"
     assert normalize_broker_name("国泰君安期货(上海)") == "国泰君安"
     assert classify_broker("高盛期货") == "qian_kun"
+    assert classify_broker("摩根大通期货有限公司") == "qian_kun"
+    assert classify_broker("瑞银期货") == "qian_kun"
+    assert classify_broker("混沌天成期货") == "hot_money"
+    assert classify_broker("永安期货") == "hot_money"
+    assert classify_broker("中财期货") == "hot_money"
+    assert classify_broker("新湖期货") == "hot_money"
 
 
 def test_unknown_broker_is_retained_as_other():
@@ -26,6 +32,7 @@ def test_category_aggregation_uses_identical_contract_population():
         ("高盛期货", 120, 60, 12, 2),
         ("中信期货", 300, 200, 20, 5),
         ("方正中期", 100, 180, -4, 10),
+        ("永安期货", 90, 70, 6, 1),
         ("未知席位", 50, 50, 0, 0),
     ]
     positions = pd.DataFrame([
@@ -36,10 +43,15 @@ def test_category_aggregation_uses_identical_contract_population():
     ])
     positions["trade_date"] = pd.to_datetime(positions["trade_date"])
     result = aggregate_category_positions(positions)
-    assert set(result["broker_category"]) == {"qian_kun", "institution", "retail", "other"}
+    assert set(result["broker_category"]) == {
+        "qian_kun", "hot_money", "institution", "retail", "other"
+    }
     qk = result[result["broker_category"].eq("qian_kun")].iloc[0]
     assert qk["net_position"] == 60
     assert qk["net_change"] == 10
+    hot_money = result[result["broker_category"].eq("hot_money")].iloc[0]
+    assert hot_money["net_position"] == 20
+    assert hot_money["net_change"] == 5
 
 
 def test_three_way_snapshot_builds_divergence_and_consensus():
@@ -52,6 +64,7 @@ def test_three_way_snapshot_builds_divergence_and_consensus():
             ("高盛期货", 120 + 30 * scale, 100, 8 * scale, 0),
             ("中信期货", 220 + 40 * scale, 200, 10 * scale, 0),
             ("方正中期", 100, 140 + 20 * scale, 0, 7 * scale),
+            ("中财期货", 90 + 20 * scale, 80, 5 * scale, 0),
         )
     ])
     positions["trade_date"] = pd.to_datetime(positions["trade_date"])
@@ -61,7 +74,10 @@ def test_three_way_snapshot_builds_divergence_and_consensus():
         for symbol in ("CU", "AL")
     ])
     category, wide = build_three_category_snapshot(positions, base, pd.Timestamp("2026-09-01").date())
-    assert len(category) == 6
+    assert len(category) == 8
+    assert set(category["broker_category"]) == {
+        "qian_kun", "hot_money", "institution", "retail"
+    }
     assert {"qk_inst_divergence", "qk_retail_divergence", "inst_retail_divergence",
             "three_way_consensus", "three_way_state"}.issubset(wide.columns)
     assert set(category["contract"].dropna()) == {"CU2610", "AL2610"}

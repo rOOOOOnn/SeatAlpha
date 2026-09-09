@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from settings.broker_classification import CORE_THREE_WAY_ORDER
 from settings.signal_thresholds import SIGNAL_THRESHOLDS
 
 
@@ -26,7 +27,7 @@ def signal_label(score: float) -> str:
 
 
 def classify_three_way(row: pd.Series) -> tuple[int, str]:
-    scores = [float(row.get(f"{category}_signal", 0) or 0) for category in ("qian_kun", "institution", "retail")]
+    scores = [float(row.get(f"{category}_signal", 0) or 0) for category in CORE_THREE_WAY_ORDER]
     directions = [1 if value >= .25 else -1 if value <= -.25 else 0 for value in scores]
     qk, inst, retail = directions
     if qk == inst == retail == 1:
@@ -42,4 +43,3 @@ def classify_three_way(row: pd.Series) -> tuple[int, str]:
     if qk == inst == retail == 0:
         return 0, "neutral"
     return 0, "high_divergence"
-

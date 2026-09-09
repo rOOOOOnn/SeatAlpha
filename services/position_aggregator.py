@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from itertools import combinations
+
 import numpy as np
 import pandas as pd
 
@@ -44,7 +46,7 @@ def aggregate_category_positions(positions: pd.DataFrame) -> pd.DataFrame:
 def build_three_category_snapshot(
     positions: pd.DataFrame, base_snapshot: pd.DataFrame, selected_date
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return category rows and one wide three-way row per visible instrument."""
+    """Return configured category rows and one wide row per visible instrument."""
     if positions.empty or base_snapshot.empty:
         return pd.DataFrame(), pd.DataFrame()
     visible = base_snapshot[["symbol", "contract", "sector", "name", "close", "price_date"]].copy()
@@ -102,7 +104,12 @@ def build_three_category_snapshot(
     wide["qk_inst_divergence"] = wide["qian_kun_signal"] - wide["institution_signal"]
     wide["qk_retail_divergence"] = wide["qian_kun_signal"] - wide["retail_signal"]
     wide["inst_retail_divergence"] = wide["institution_signal"] - wide["retail_signal"]
-    wide["divergence_score"] = wide[["qk_inst_divergence", "qk_retail_divergence", "inst_retail_divergence"]].abs().max(axis=1)
+    divergence_columns = []
+    for left, right in combinations(CATEGORY_ORDER, 2):
+        column = f"{left}_{right}_divergence"
+        wide[column] = wide[f"{left}_signal"] - wide[f"{right}_signal"]
+        divergence_columns.append(column)
+    wide["divergence_score"] = wide[divergence_columns].abs().max(axis=1)
     resonance = wide.apply(classify_three_way, axis=1)
     wide["three_way_consensus"] = [item[0] for item in resonance]
     wide["three_way_state"] = [item[1] for item in resonance]

@@ -4,7 +4,7 @@
 
 ## 中文说明
 
-国内商品期货席位资金流监控与信号发现工具。项目完全运行在本地：从交易所公开数据更新，写入 DuckDB，并通过 Streamlit + Plotly 对乾坤、机构和散户三类客户持仓席位进行同口径比较。界面支持中文与英文即时切换。
+国内商品期货席位资金流监控与信号发现工具。项目完全运行在本地：从交易所公开数据更新，写入 DuckDB，并通过 Streamlit + Plotly 对外资、著名游资、机构型和散户代理四类客户持仓席位进行同口径比较。界面支持中文与英文即时切换。
 
 ### 快速开始（Windows）
 
@@ -41,20 +41,21 @@ backup_refresh_token = "可选的备用 refresh token"
 
 ### 页面功能
 
-- 三类总体概览：乾坤、机构、散户的净仓、今日变化、强弱品种横向比较
-- 分类方向速览：按七个板块比较三类席位的净仓、变化、一致性与方向标签
-- 一致性与分歧地图：固定使用菱形、圆形和三角形区分类别，并提供三方比较模式
-- 核心品种全景：每个品种一行并排展示三类席位统计、分歧度和共振状态
+- 顶部分层导航：商品、股指、国债期货三个独立市场，每个市场分别提供日报、品种详情、席位画像和数据状态
+- 四类总体概览：外资、著名游资、机构型、散户代理的净仓、今日变化、强弱品种横向比较
+- 分类方向速览：按板块比较四类席位的净仓、变化、一致性与方向标签
+- 一致性地图：固定使用不同形状区分类别；默认汇总展示每个板块分歧度和信号强度靠前的代表品种，也可切换单一板块或全市场
+- 核心品种全景：每个品种一行并排展示四类席位统计、分歧度和核心三方共振状态
 - 今日关键变化、分歧监控和基于确定性规则的 Executive Read
 - 品种详情：价格与品种级 Top20 净仓历史、Top 净多/净空席位、席位行为分类
 - 席位画像：单席位跨品种净持仓和变化分布
 - 数据状态：五家交易所最近更新状态、来源、覆盖日期和完整更新日志
 
-### 三类席位配置
+### 四类席位配置
 
-分类名单与别名统一位于 `settings/broker_classification.py`，信号阈值位于 `settings/signal_thresholds.py`。高盛期货及其深圳名称会标准化为乾坤期货并进入独立的 `qian_kun` 类别。不能可靠归类的名称保留为 `other`，页面显示数量并可展开查看；不会静默丢弃。
+分类名单与别名统一位于 `settings/broker_classification.py`，信号阈值位于 `settings/signal_thresholds.py`。外资类包括乾坤期货、摩根大通、瑞银期货和摩根士丹利期货；著名游资类包括中财期货、混沌天成、永安期货和新湖期货。高盛期货及其深圳名称会标准化为乾坤期货。不能可靠归类的名称保留为 `other`，页面显示数量并可展开查看；不会静默丢弃。
 
-数据流为：交易所原始排名 → 名称标准化 → 席位分类 → 同日期/品种/单一主力合约聚合 → 三类信号与分歧/共振计算 → 板块与页面视图。页面不把席位数据解释为期货公司的自营观点。
+数据流为：交易所原始排名 → 名称标准化 → 席位分类 → 同日期/品种/单一主力合约聚合 → 四类信号与分歧计算、外资/机构/散户代理核心三方共振计算 → 板块与页面视图。页面不把席位数据解释为期货公司的自营观点。
 
 ### 数据与口径
 
@@ -64,7 +65,7 @@ backup_refresh_token = "可选的备用 refresh token"
 
 当前目录覆盖上期所/上期能源、大商所、郑商所、广期所和中金所共 90 个期货品种。中金所股指与国债会员排名分别使用 iFinD 专题报表，并用相邻交易日持仓计算增减；账号无中金所普通行情权限时，行情改用已验证的 iFinD 专题行情报表。观察日仍自动显示当天，但在当日晚间数据发布窗口前，更新和新鲜度判断以上一个已完成交易日为基准。状态页只把每个品种最新记录用于新鲜度判断，旧的 8 月 21 日新浪备用数据仅保留在历史审计区，不再误报为当前延迟。目录存在但停牌、零持仓或未返回会员排名的品种会保留在目录中并明确标出原因。
 
-“机构型席位”和“散户代理席位”是对交易所公布的客户持仓席位所做的研究分类，完整名单在状态页和 `settings/broker_classification.py` 中公开展示。“散户代理席位”不是交易所直接披露的个人账户数据，也不代表对应期货公司的自营观点；未能可靠判断的会员保留为“未分类”。
+四类席位均是对交易所公布的客户持仓席位所做的研究分类，完整名单在状态页和 `settings/broker_classification.py` 中公开展示。“著名游资”是用户指定的会员席位组合，“散户代理席位”不是交易所直接披露的个人账户数据；所有类别都不代表对应期货公司的自营观点，未能可靠判断的会员保留为“未分类”。
 
 ### 开发与测试
 
@@ -77,7 +78,7 @@ conda run -n seatalpha ruff check .
 
 ## English
 
-SeatAlpha is a local research dashboard for monitoring member positioning in Chinese futures. It updates from public exchange data, stores normalized records in DuckDB, and compares Qian Kun, institutional, and retail-oriented client-position seats on an identical basis. The entire interface can switch instantly between Chinese and English.
+SeatAlpha is a local research dashboard for monitoring member positioning in Chinese futures. It updates from public exchange data, stores normalized records in DuckDB, and compares foreign, notable active-trader, institutional, and retail-oriented client-position seats on an identical basis. The entire interface can switch instantly between Chinese and English.
 
 ### Quick Start (Windows)
 
@@ -114,10 +115,11 @@ The local secrets file is Git-ignored. You may alternatively set `IFIND_REFRESH_
 
 ### Dashboard Views
 
-- Three-category overview: side-by-side Qian Kun, institution, and retail net positioning and daily changes
+- Two-level top navigation: separate commodity, equity-index, and treasury-futures markets, each with its own daily view, instrument detail, broker profile, and data status
+- Four-category overview: side-by-side foreign, notable active-trader, institution, and retail-proxy positioning and daily changes
 - Sector direction: compact net position, change, consensus, and signal labels across seven sectors
-- Consensus and divergence maps: fixed diamond/circle/triangle identities and compare mode
-- Core instrument panorama: one row per instrument with three category columns, divergence, and resonance state
+- Consensus and divergence maps: distinct marker identities, with sector leaders shown together by default and optional single-sector/full-market scopes
+- Core instrument panorama: one row per instrument with four category columns, divergence, and core three-way resonance state
 - Key changes, divergence monitoring, and a deterministic Executive Read
 - Instrument Detail: price and variety-level Top 20 positioning history, top net-long/net-short members, and member behavior classification
 - Broker Profile: cross-instrument net positions and changes for an individual broker
@@ -125,7 +127,7 @@ The local secrets file is Git-ignored. You may alternatively set `IFIND_REFRESH_
 
 ### Seat Classification
 
-Edit aliases and the three category lists in `settings/broker_classification.py`; edit shared signal thresholds in `settings/signal_thresholds.py`. Goldman Sachs Futures variants normalize to Qian Kun and remain separate from the institution category. Uncertain names remain `other`, are counted and exposed in the UI, and are never silently dropped.
+Edit aliases and the four category lists in `settings/broker_classification.py`; edit shared signal thresholds in `settings/signal_thresholds.py`. The foreign basket contains Qian Kun, J.P. Morgan, UBS, and Morgan Stanley Futures. The notable active-trader basket contains Zhongcai, Chaos Ternary, Yongan, and Xinhu Futures. Goldman Sachs Futures variants normalize to Qian Kun. Uncertain names remain `other`, are counted and exposed in the UI, and are never silently dropped.
 
 The calculation flow is: raw exchange ranks → broker normalization → classification → identical date/instrument/single-contract aggregation → category signals and divergence/resonance → sector and presentation views. The categories describe exchange-published client-position seats, not futures-company proprietary views.
 
@@ -137,7 +139,7 @@ Quotes, main-contract member rankings and position history prefer iFinD, with pu
 
 The catalog covers 90 futures products across SHFE/INE, DCE, CZCE, GFEX, and CFFEX. CFFEX equity-index and treasury-bond rankings use their dedicated iFinD reports, with daily changes calculated from adjacent trading days. If ordinary CFFEX quotation entitlement is unavailable, the verified iFinD financial-futures report supplies the quote fields. The observation selector still defaults to today, but before the evening publication window updates and freshness checks use the previous completed trading day. Freshness uses only the newest record for each product; the August 21 Sina fallback remains visible solely in historical audit coverage. Listed products that are dormant, have zero open interest, or have no published member ranking stay in the catalog with an explicit reason.
 
-“Institution” and “retail proxy” are research classifications of published client-position seats. The complete configured and currently observed member lists are visible on the Data Status page and maintained in `settings/broker_classification.py`. “Retail proxy” is not exchange-disclosed individual-account data, and no category represents a futures company's proprietary house view. Uncertain members remain unclassified.
+All four groups are research classifications of published client-position seats. The complete configured and currently observed member lists are visible on the Data Status page and maintained in `settings/broker_classification.py`. “Notable active traders” is a user-defined member basket; “retail proxy” is not exchange-disclosed individual-account data, and no category represents a futures company's proprietary house view. Uncertain members remain unclassified.
 
 ### Development and Tests
 

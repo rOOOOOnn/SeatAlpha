@@ -8,17 +8,22 @@ from i18n import instrument_name, sector_name
 from services.signal_engine import signal_label
 from settings.broker_classification import CATEGORY_LABELS, CATEGORY_ORDER
 
-CATEGORY_COLORS = {"qian_kun": "#a78331", "institution": "#315f78", "retail": "#8a6670"}
+CATEGORY_COLORS = {
+    "qian_kun": "#a78331",
+    "hot_money": "#c36f34",
+    "institution": "#315f78",
+    "retail": "#8a6670",
+}
 SIGNAL_COPY = {
     "zh": {"strong_long": "强多", "long": "偏多", "neutral": "中性", "short": "偏空", "strong_short": "强空"},
     "en": {"strong_long": "Strong long", "long": "Long", "neutral": "Neutral", "short": "Short", "strong_short": "Strong short"},
 }
 STATE_COPY = {
-    "zh": {"three_long": "三方多头共振", "three_short": "三方空头共振", "qk_inst_vs_retail": "乾坤与机构同向、散户反向",
-           "qk_retail_vs_inst": "乾坤与散户同向、机构反向", "inst_retail_vs_qk": "机构与散户同向、乾坤反向",
-           "high_divergence": "三方高度分歧", "neutral": "方向中性"},
-    "en": {"three_long": "Three-way long resonance", "three_short": "Three-way short resonance", "qk_inst_vs_retail": "Qian Kun + institution vs retail",
-           "qk_retail_vs_inst": "Qian Kun + retail vs institution", "inst_retail_vs_qk": "Institution + retail vs Qian Kun",
+    "zh": {"three_long": "核心三方多头共振", "three_short": "核心三方空头共振", "qk_inst_vs_retail": "外资与机构同向、散户反向",
+           "qk_retail_vs_inst": "外资与散户同向、机构反向", "inst_retail_vs_qk": "机构与散户同向、外资反向",
+           "high_divergence": "核心三方高度分歧", "neutral": "方向中性"},
+    "en": {"three_long": "Core three-way long resonance", "three_short": "Core three-way short resonance", "qk_inst_vs_retail": "Foreign + institution vs retail",
+           "qk_retail_vs_inst": "Foreign + retail vs institution", "inst_retail_vs_qk": "Institution + retail vs foreign",
            "high_divergence": "High three-way divergence", "neutral": "Neutral"},
 }
 
@@ -61,7 +66,7 @@ def overview_cards(
         row = wide.loc[wide["divergence_score"].idxmax()]
         divergence = f"{escape(instrument_name(row['symbol'], lang))} · {row['divergence_score']:.2f}σ"
     cards.append(f'''<div class="atlas-card divergence"><header><span class="cross">×</span><b>{'最大分歧' if lang=='zh' else 'Max divergence'}</b></header>
-    <div class="big">{divergence}</div><small>{'三组标准化信号最大距离' if lang=='zh' else 'Maximum standardized signal distance'}</small>
+    <div class="big">{divergence}</div><small>{'四类标准化信号最大距离' if lang=='zh' else 'Maximum standardized signal distance across four categories'}</small>
     <div class="delta">{len(wide[wide['divergence_score'].ge(1.5)]) if not wide.empty else 0} <em>{'个高分歧品种' if lang=='zh' else 'high-divergence instruments'}</em></div></div>''')
     return '<div class="overview-grid">' + "".join(cards) + "</div>"
 
@@ -181,5 +186,5 @@ def executive_read(category_rows: pd.DataFrame, wide: pd.DataFrame, lang: str) -
     resonant = wide[wide["three_way_consensus"].abs().gt(0)]
     if not resonant.empty:
         symbols = ("、" if lang == "zh" else ", ").join(instrument_name(symbol, lang) for symbol in resonant["symbol"].head(5))
-        lines.append(f"三方同向共振品种包括：{symbols}。" if lang == "zh" else f"Three-way aligned instruments include {symbols}.")
+        lines.append(f"外资、机构与散户代理同向共振品种包括：{symbols}。" if lang == "zh" else f"Foreign, institution and retail-aligned instruments include {symbols}.")
     return lines[:5]

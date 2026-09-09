@@ -7,7 +7,12 @@ import streamlit as st
 
 from config import DB_PATH, EXCHANGES, SYMBOL_META
 from core.db import is_empty, query
-from dashboard_views import broker_profile_rows, build_broker_profiles, build_snapshot
+from dashboard_views import (
+    broker_profile_rows,
+    build_broker_profiles,
+    build_snapshot,
+    select_sector_leaders,
+)
 from i18n import instrument_name, log_message, sector_name, source_name
 from pipeline.seed_demo import seed
 from pipeline.update import latest_weekday, update
@@ -18,6 +23,7 @@ from settings.broker_classification import (
     CATEGORY_LABELS,
     CATEGORY_ORDER,
     SEAT_CLASSIFICATION,
+    SEAT_RESEARCH_NOTES,
 )
 from settings.signal_thresholds import SIGNAL_THRESHOLDS
 from ui.copy import cp
@@ -42,9 +48,19 @@ EXCHANGE_NAMES_ZH = {
     "CFFEX": "中金所",
 }
 
+MARKET_SYMBOLS = {
+    "commodity": tuple(symbol for symbol, meta in SYMBOL_META.items() if meta[2] != "CFFEX"),
+    "equity": ("IF", "IH", "IC", "IM"),
+    "treasury": ("T", "TF", "TS", "TL"),
+}
+MARKET_LABELS = {
+    "zh": {"commodity": "商品", "equity": "股指", "treasury": "国债期货"},
+    "en": {"commodity": "Commodities", "equity": "Equity Index", "treasury": "Treasury Futures"},
+}
+
 st.markdown("""
 <style>
-:root{--ink:#19242c;--muted:#74818a;--line:#dfe4e6;--paper:#f4f5f4;--qk:#a78331;--inst:#315f78;--retail:#8a6670}
+:root{--ink:#19242c;--muted:#74818a;--line:#dfe4e6;--paper:#f4f5f4;--qk:#a78331;--hot:#c36f34;--inst:#315f78;--retail:#8a6670}
 html,body,[class*="css"]{font-family:Inter,"Microsoft YaHei",sans-serif;color:var(--ink)}
 .stApp,.stApp p,.stApp span,.stApp label,.stApp h1,.stApp h2,.stApp h3{color:var(--ink)}
 .stApp{background:var(--paper)}.block-container{max-width:1740px;padding:2.1rem 2.7rem 5rem}
@@ -56,10 +72,10 @@ html,body,[class*="css"]{font-family:Inter,"Microsoft YaHei",sans-serif;color:va
 .meta{text-align:right;font-size:.68rem;line-height:1.75;color:var(--muted)}.meta b{font:700 .9rem monospace;color:var(--ink)}
 .section-head{display:grid;grid-template-columns:42px auto 1fr;align-items:end;gap:.65rem;border-bottom:1px solid var(--ink);padding:2.2rem 0 .75rem;margin-bottom:1rem}
 .section-head>span{font:700 .66rem monospace;color:var(--qk)}.section-head h2{font-size:1.25rem;margin:0}.section-head p{text-align:right;margin:0;color:var(--muted);font-size:.65rem}
-.overview-grid{display:grid;grid-template-columns:repeat(4,1fr);background:#fff;border:1px solid var(--line)}
+.overview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));background:#fff;border:1px solid var(--line)}
 .atlas-card{padding:1rem 1.15rem;border-right:1px solid var(--line);min-height:165px;border-top:3px solid var(--inst)}.atlas-card:last-child{border-right:0}
-.atlas-card.qian_kun{border-top-color:var(--qk)}.atlas-card.retail{border-top-color:var(--retail)}.atlas-card.divergence{background:#f7f1df;border-top-color:var(--qk)}
-.atlas-card header{display:flex;align-items:center;gap:.5rem;font-size:.75rem}.shape{width:9px;height:9px;background:var(--inst);border-radius:50%}.qian_kun .shape{background:var(--qk);transform:rotate(45deg);border-radius:0}.retail .shape{background:var(--retail);clip-path:polygon(50% 0,100% 100%,0 100%)}
+.atlas-card.qian_kun{border-top-color:var(--qk)}.atlas-card.hot_money{border-top-color:var(--hot)}.atlas-card.retail{border-top-color:var(--retail)}.atlas-card.divergence{background:#f7f1df;border-top-color:var(--qk)}
+.atlas-card header{display:flex;align-items:center;gap:.5rem;font-size:.75rem}.shape{width:9px;height:9px;background:var(--inst);border-radius:50%}.qian_kun .shape{background:var(--qk);transform:rotate(45deg);border-radius:0}.hot_money .shape{background:var(--hot);border-radius:1px}.retail .shape{background:var(--retail);clip-path:polygon(50% 0,100% 100%,0 100%)}
 .atlas-card .big{font:700 1.55rem monospace;margin:1rem 0 .05rem}.atlas-card>small{color:var(--muted);font-size:.62rem}.atlas-card .delta{font:700 .82rem monospace;margin:.7rem 0}.atlas-card .delta em{font:400 .6rem sans-serif;color:var(--muted)}
 .atlas-card footer{display:grid;grid-template-columns:repeat(4,1fr);gap:.3rem;border-top:1px solid var(--line);padding-top:.55rem}.atlas-card footer span{font-size:.58rem;color:var(--muted)}.atlas-card footer b{display:block;font:700 .67rem monospace;color:var(--ink)}
 .sector-matrix{border:1px solid var(--line);background:#fff}.sector-row{display:grid;grid-template-columns:155px repeat(3,1fr);border-bottom:1px solid var(--line);min-height:94px}.sector-row:last-child{border:0}.sector-row h3{font-size:.88rem;margin:0;padding:1.1rem;border-right:1px solid var(--line)}
@@ -69,7 +85,7 @@ html,body,[class*="css"]{font-family:Inter,"Microsoft YaHei",sans-serif;color:va
 .instrument-table{background:#fff;border:1px solid var(--line)}.instrument-head,.instrument-row{display:grid;grid-template-columns:145px repeat(3,1fr) 165px}.instrument-head{background:#edf0f1;border-bottom:1px solid var(--line)}.instrument-head span{padding:.55rem .8rem;font-size:.58rem;color:var(--muted)}
 .instrument-row{border-bottom:1px solid var(--line);min-height:88px}.instrument-row:last-child{border:0}.instrument-id,.tri-cell,.div-score{padding:.75rem .8rem;border-right:1px solid var(--line)}.instrument-id b{display:block;font-size:.78rem}.instrument-id span,.instrument-id small{display:block;color:var(--muted);font-size:.55rem;margin-top:.15rem}
 .tri-cell{display:grid;grid-template-columns:1fr auto;gap:.2rem}.tri-cell strong{font-size:.55rem;color:var(--muted)}.tri-cell b{font:700 .78rem monospace}.tri-cell span,.tri-cell em{font:500 .58rem monospace;color:var(--muted)}.tri-cell small{grid-column:1/3;width:max-content}.div-score{border:0}.div-score b{font:700 1rem monospace}.div-score span{display:block;font-size:.58rem;color:var(--muted);margin-top:.35rem}
-.change-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}.change-panel{background:#fff;padding:1rem;border-top:3px solid var(--inst)}.change-panel.qian_kun{border-top-color:var(--qk)}.change-panel.retail{border-top-color:var(--retail)}.change-panel h3{font-size:.82rem;margin:0 0 .8rem}
+.change-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}.change-panel{background:#fff;padding:1rem;border-top:3px solid var(--inst)}.change-panel.qian_kun{border-top-color:var(--qk)}.change-panel.hot_money{border-top-color:var(--hot)}.change-panel.retail{border-top-color:var(--retail)}.change-panel h3{font-size:.82rem;margin:0 0 .8rem}
 .change-rank{border-top:1px solid var(--line);padding:.65rem 0 .25rem}.change-rank h4{font-size:.58rem;color:var(--muted);font-weight:600;margin:0 0 .35rem}.change-rank>small{font-size:.6rem;color:var(--muted)}
 .change-item{display:grid;grid-template-columns:minmax(76px,28%) minmax(0,1fr) 65px;gap:.5rem;align-items:center;margin:.6rem 0}.change-item b{font-size:.78rem;line-height:1.4;overflow-wrap:break-word}.change-item span{text-align:right;font:.62rem monospace}
 .monitor-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}.monitor-card{background:#fff;padding:1rem;min-height:85px}.monitor-card span,.monitor-card small{display:block;color:var(--muted);font-size:.6rem}.monitor-card b{display:block;font:.82rem monospace;margin:.65rem 0}
@@ -161,6 +177,39 @@ metrics, positions, contracts, logs, position_history = load_data()
 for frame in (metrics, positions, contracts, position_history):
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
 
+lang = "en" if st.session_state.get("language_choice") == "English" else "zh"
+market_pages = {
+    MARKET_LABELS[lang]["commodity"]: [
+        st.Page(lambda: render_dashboard("overview"), title="商品日报" if lang == "zh" else "Commodity Daily", url_path="commodity-overview", default=True),
+        st.Page(lambda: render_dashboard("detail"), title=cp(lang, "detail"), url_path="commodity-instrument"),
+        st.Page(lambda: render_broker_page(), title=cp(lang, "broker"), url_path="commodity-brokers"),
+        st.Page(lambda: render_status_page(), title=cp(lang, "status"), url_path="commodity-data-status"),
+    ],
+    MARKET_LABELS[lang]["equity"]: [
+        st.Page(lambda: render_dashboard("overview"), title="股指日报" if lang == "zh" else "Equity Index Daily", url_path="equity-overview"),
+        st.Page(lambda: render_dashboard("detail"), title=cp(lang, "detail"), url_path="equity-instrument"),
+        st.Page(lambda: render_broker_page(), title=cp(lang, "broker"), url_path="equity-brokers"),
+        st.Page(lambda: render_status_page(), title=cp(lang, "status"), url_path="equity-data-status"),
+    ],
+    MARKET_LABELS[lang]["treasury"]: [
+        st.Page(lambda: render_dashboard("overview"), title="国债期货日报" if lang == "zh" else "Treasury Futures Daily", url_path="treasury-overview"),
+        st.Page(lambda: render_dashboard("detail"), title=cp(lang, "detail"), url_path="treasury-instrument"),
+        st.Page(lambda: render_broker_page(), title=cp(lang, "broker"), url_path="treasury-brokers"),
+        st.Page(lambda: render_status_page(), title=cp(lang, "status"), url_path="treasury-data-status"),
+    ],
+}
+navigation = st.navigation(market_pages, position="top")
+active_route = navigation.url_path or "commodity-overview"
+market_group = next(
+    (group for group in MARKET_SYMBOLS if active_route.startswith(f"{group}-")),
+    "commodity",
+)
+market_label = MARKET_LABELS[lang][market_group]
+
+
+def market_page_title(page_title: str) -> str:
+    return f"{market_label}{page_title}" if lang == "zh" else f"{market_label} {page_title}"
+
 with st.sidebar:
     language_label = "Language" if st.session_state.get("language_choice") == "English" else "语言"
     language_choice = st.radio(
@@ -188,40 +237,61 @@ with st.sidebar:
                         | set(position_history.loc[position_history["source"].ne("demo"), "trade_date"].dt.date)
                         | {latest_published_date}, reverse=True)
     selected_date = st.selectbox(cp(lang, "date"), real_dates)
-    all_symbols = st.toggle("全部品种" if lang == "zh" else "All instruments", value=True)
-    sectors = sorted({meta[1] for meta in SYMBOL_META.values()})
+    st.caption(
+        f"当前市场：{market_label}" if lang == "zh" else f"Current market: {market_label}"
+    )
+    all_symbols = st.toggle(
+        f"全部{market_label}品种" if lang == "zh" else f"All {market_label.lower()} instruments",
+        value=True,
+        key=f"all_symbols_{market_group}",
+    )
+    sectors = sorted({SYMBOL_META[symbol][1] for symbol in MARKET_SYMBOLS[market_group]})
     if all_symbols:
         selected_sectors = sectors
-        selected_symbols = list(SYMBOL_META)
+        selected_symbols = list(MARKET_SYMBOLS[market_group])
         st.caption(
-            f"已包含全部 {len(sectors)} 个板块、{len(selected_symbols)} 个期货品种。"
+            f"已包含{market_label}市场全部 {len(selected_symbols)} 个期货品种。"
             if lang == "zh" else
-            f"All {len(sectors)} sectors and {len(selected_symbols)} futures products are included."
+            f"All {len(selected_symbols)} {market_label.lower()} products are included."
         )
     else:
-        selected_sectors = st.multiselect(
-            cp(lang, "sectors"), sectors, default=sectors,
-            format_func=lambda value: sector_name(value, lang),
-        )
+        if market_group == "commodity":
+            selected_sectors = st.multiselect(
+                cp(lang, "sectors"), sectors, default=sectors,
+                format_func=lambda value: sector_name(value, lang),
+                key="commodity_sectors",
+            )
+        else:
+            selected_sectors = sectors
         available_symbols = [
-            symbol for symbol, meta in SYMBOL_META.items() if meta[1] in selected_sectors
+            symbol for symbol in MARKET_SYMBOLS[market_group]
+            if SYMBOL_META[symbol][1] in selected_sectors
         ]
         selected_symbols = st.multiselect(
             cp(lang, "symbols"), available_symbols, default=available_symbols,
             format_func=lambda symbol: instrument_name(symbol, lang, SYMBOL_META[symbol][0]),
+            key=f"selected_symbols_{market_group}",
         )
-    selected_categories = st.multiselect(cp(lang, "categories"), CATEGORY_ORDER, default=list(CATEGORY_ORDER),
-                                         format_func=lambda c: CATEGORY_LABELS[lang][c])
+    if st.session_state.get("category_schema_version") != 2:
+        st.session_state["category_schema_version"] = 2
+        st.session_state["selected_categories"] = list(CATEGORY_ORDER)
+    selected_categories = st.multiselect(
+        cp(lang, "categories"),
+        CATEGORY_ORDER,
+        format_func=lambda c: CATEGORY_LABELS[lang][c],
+        key="selected_categories",
+    )
     selected_categories = [category for category in CATEGORY_ORDER if category in selected_categories]
     divergence_only = st.toggle(cp(lang, "divergence_only"))
     consensus_only = st.toggle(cp(lang, "consensus_only"))
     major_only = st.toggle(cp(lang, "major_only"))
 
 def render_broker_page():
-    st.header(cp(lang, "broker"))
-    profile_source, broker_options = build_broker_profiles(positions, selected_date)
+    st.header(market_page_title(cp(lang, "broker")))
+    market_positions = positions[positions["symbol"].isin(selected_symbols)]
+    profile_source, broker_options = build_broker_profiles(market_positions, selected_date)
     if broker_options:
-        broker = st.selectbox(cp(lang, "broker"), broker_options)
+        broker = st.selectbox(cp(lang, "broker"), broker_options, key=f"broker_{market_group}")
         category = classify_broker(broker)
         st.caption(
             f"席位类别：{CATEGORY_LABELS[lang].get(category, category)}；数据为交易所公布的客户持仓排名。"
@@ -250,9 +320,10 @@ def render_broker_page():
 
 
 def render_status_page():
-    st.header(cp(lang, "status"))
+    st.header(market_page_title(cp(lang, "status")))
     expected_date = latest_weekday(selected_date)
     coverage = build_current_coverage(contracts, positions, selected_date, expected_date)
+    coverage = coverage[coverage["symbol"].isin(MARKET_SYMBOLS[market_group])].reset_index(drop=True)
     fresh = int(coverage["status"].eq("最新").sum())
     delayed = int(coverage["status"].str.contains("延迟").sum())
     missing = len(coverage) - fresh - delayed
@@ -300,9 +371,10 @@ def render_status_page():
 
     st.subheader("席位分类说明" if lang == "zh" else "Seat classification")
     if lang == "zh":
-        st.warning("“散户”不是交易所直接发布的个人账户数据，而是零售客户占比较高的期货公司客户席位代理分类；“机构”同样是研究分类，不代表期货公司的自营观点。原始数据来自 iFinD/交易所会员持仓排名。")
+        st.warning("“外资”“著名游资”“机构”“散户代理”均为对交易所会员持仓排名的研究分类，不代表期货公司的自营观点；“散户代理”也不是个人账户数据。外资按外资控股期货公司归类，著名游资为中财、混沌天成、永安、新湖四个席位。")
     latest_real = positions[
         positions["source"].ne("demo") & positions["trade_date"].dt.date.le(selected_date)
+        & positions["symbol"].isin(MARKET_SYMBOLS[market_group])
     ].copy()
     if not latest_real.empty:
         latest_real["latest"] = latest_real.groupby("symbol")["trade_date"].transform("max")
@@ -319,6 +391,22 @@ def render_status_page():
             else:
                 st.write("Currently observed: " + (", ".join(observed) if observed else "None"))
                 st.caption("Configured list: " + ", ".join(configured))
+            if category == "hot_money":
+                notes = pd.DataFrame(
+                    [
+                        {
+                            ("席位" if lang == "zh" else "Seat"): broker,
+                            ("市场常关联人物/资金" if lang == "zh" else "Common market association"): note,
+                        }
+                        for broker, note in SEAT_RESEARCH_NOTES[lang].items()
+                    ]
+                )
+                st.dataframe(notes, hide_index=True, width="stretch")
+                st.caption(
+                    "以上为市场研究中的常见关联备注，仅用于识别席位，不代表账户归属、持仓归属或投资建议。"
+                    if lang == "zh"
+                    else "These are common market-research associations for seat identification only; they do not establish account ownership, position ownership, or investment advice."
+                )
 
     with st.expander("历史来源覆盖（审计记录）" if lang == "zh" else "Historical source coverage (audit)"):
         st.caption(
@@ -326,7 +414,9 @@ def render_status_page():
             if lang == "zh" else
             "This table retains historical providers for audit. Its last date is not the active dashboard date; use the current coverage table above."
         )
-        history = historical_source_coverage(positions)
+        history = historical_source_coverage(
+            positions[positions["symbol"].isin(MARKET_SYMBOLS[market_group])]
+        )
         history["source"] = history["source"].map(lambda value: source_name(value, lang))
         if lang == "zh":
             history["exchange"] = history["exchange"].map(EXCHANGE_NAMES_ZH).fillna(history["exchange"])
@@ -335,7 +425,10 @@ def render_status_page():
         st.dataframe(history, hide_index=True, width="stretch")
     with st.expander("完整更新日志" if lang == "zh" else "Full update log"):
         if not logs.empty:
-            display_logs = logs.copy()
+            market_exchanges = {
+                SYMBOL_META[symbol][2] for symbol in MARKET_SYMBOLS[market_group]
+            }
+            display_logs = logs[logs["exchange"].isin(market_exchanges)].copy()
             display_logs["source"] = display_logs["source"].map(lambda value: source_name(value, lang))
             display_logs["message"] = display_logs["message"].map(lambda value: log_message(value, lang))
             if lang == "zh":
@@ -379,11 +472,11 @@ def render_dashboard(page: str = "overview"):
     coverage = coverage[coverage["symbol"].isin(selected_symbols)]
     detail_symbol = None
     if page == "detail":
-        st.header(cp(lang, "detail"))
+        st.header(market_page_title(cp(lang, "detail")))
         if not selected_symbols:
             st.info(cp(lang, "no_category"))
             return
-        detail_symbol = st.selectbox(cp(lang, "symbols"), selected_symbols, key="detail_symbol",
+        detail_symbol = st.selectbox(cp(lang, "symbols"), selected_symbols, key=f"detail_symbol_{market_group}",
                                      format_func=lambda symbol: instrument_name(symbol, lang))
         if detail_symbol not in set(base["symbol"]):
             status = build_current_coverage(
@@ -429,9 +522,20 @@ def render_dashboard(page: str = "overview"):
         EXCHANGE_NAMES_ZH.get(code, code) for code in covered_exchange_codes
     ) if lang == "zh" else ", ".join(covered_exchange_codes)
     updated_text = latest_update.strftime("%Y-%m-%d %H:%M") if pd.notna(latest_update) else "—"
-    kicker = "期货会员持仓 · 全市场图谱" if lang == "zh" else "INSTITUTIONAL POSITIONING · FUTURES ATLAS"
+    kicker = (
+        f"期货会员持仓 · {market_label}市场图谱"
+        if lang == "zh" else
+        f"INSTITUTIONAL POSITIONING · {market_label.upper()} ATLAS"
+    )
+    report_title = (
+        f"{market_label}期货持仓全景"
+        if lang == "zh" and market_group != "treasury" else
+        f"{market_label}持仓全景"
+        if lang == "zh" else
+        f"{market_label} Positioning Atlas"
+    )
     st.markdown(f'''<div class="report-head"><div><span class="kicker">{kicker}</span>
-    <h1>{cp(lang,"subtitle")}</h1><p>{cp(lang,"tagline")}</p></div><div class="meta"><b>{selected_date:%Y.%m.%d}</b><br>
+    <h1>{report_title}</h1><p>{cp(lang,"tagline")}</p></div><div class="meta"><b>{selected_date:%Y.%m.%d}</b><br>
     {'更新时间' if lang=='zh' else 'Updated'}: {updated_text}<br>{'覆盖交易所' if lang=='zh' else 'Exchanges'}: {covered_exchanges}</div></div>''', unsafe_allow_html=True)
 
     if unclassified:
@@ -487,35 +591,54 @@ def render_dashboard(page: str = "overview"):
 
     st.markdown(section_header("03", cp(lang, "map"), cp(lang, "map_note")), unsafe_allow_html=True)
     chart_sectors = sorted(wide["sector"].dropna().unique())
-    default_chart_sector = "黑色" if "黑色" in chart_sectors else chart_sectors[0]
-    chart_sector_options = [None, *chart_sectors]
-    chart_sector = st.selectbox(
-        "图表板块" if lang == "zh" else "Chart sector",
-        chart_sector_options,
-        index=chart_sector_options.index(default_chart_sector),
-        format_func=lambda value: (
-            "全市场（悬浮查看品种）" if lang == "zh" else "Full market (hover for names)"
-        ) if value is None else sector_name(value, lang),
-        key="chart_sector",
+    scope_labels = {
+        "leaders": "各板块代表" if lang == "zh" else "Sector leaders",
+        "sector": "单一板块" if lang == "zh" else "Single sector",
+        "market": "全市场" if lang == "zh" else "Full market",
+    }
+    chart_scope = st.segmented_control(
+        "图表范围" if lang == "zh" else "Chart scope",
+        list(scope_labels),
+        default="leaders" if market_group == "commodity" else "market",
+        format_func=scope_labels.get,
+        key=f"chart_scope_{market_group}",
     )
-    map_category_rows = category_rows if chart_sector is None else category_rows[
-        category_rows["sector"].eq(chart_sector)
-    ]
-    map_wide = wide if chart_sector is None else wide[wide["sector"].eq(chart_sector)]
+    if chart_scope == "sector":
+        default_chart_sector = "黑色" if "黑色" in chart_sectors else chart_sectors[0]
+        chart_sector = st.selectbox(
+            "图表板块" if lang == "zh" else "Chart sector",
+            chart_sectors,
+            index=chart_sectors.index(default_chart_sector),
+            format_func=lambda value: sector_name(value, lang),
+            key=f"chart_sector_{market_group}",
+        )
+        map_wide = wide[wide["sector"].eq(chart_sector)]
+    elif chart_scope == "leaders":
+        top_n = st.slider(
+            "每个板块显示品种数" if lang == "zh" else "Instruments per sector",
+            min_value=1,
+            max_value=5,
+            value=2,
+            key=f"sector_top_n_{market_group}",
+        )
+        map_wide = select_sector_leaders(wide, top_n)
+    else:
+        map_wide = wide
+    map_category_rows = category_rows[category_rows["symbol"].isin(map_wide["symbol"])]
     show_all_chart_labels = st.toggle(
         "显示全部品种标签" if lang == "zh" else "Show all instrument labels",
         value=False,
-        key="show_all_chart_labels",
+        key=f"show_all_chart_labels_{market_group}",
         help=(
-            "默认仅标注变化最明显的 6 个席位数据点；同一品种在不同席位类别中分别处理，所有点均可悬浮查看完整名称。"
+            "默认仅标注变化最明显的席位数据点；同一品种在不同席位类别中分别处理，所有点均可悬浮查看完整名称。"
             if lang == "zh" else
-            "By default, only the six most notable seat data points are labelled; each seat category is handled separately, and every point retains its full hover name."
+            "By default, only the most notable seat data points are labelled; each seat category is handled separately, and every point retains its full hover name."
         ),
     )
     st.caption(
-        f"当前图表展示 {len(map_wide)} 个品种；默认直接标注变化较大的 6 个席位数据点，其余可悬浮查看。"
+        f"当前图表展示 {len(map_wide)} 个品种；默认直接标注变化较大的席位数据点，其余可悬浮查看。"
         if lang == "zh" else
-        f"The charts show {len(map_wide)} instruments. By default, six notable seat data points are labelled; hover for all names."
+        f"The charts show {len(map_wide)} instruments. Notable seat data points are labelled; hover for all names."
     )
     map_mode = st.segmented_control(cp(lang, "compare"), [cp(lang, "all")] + [CATEGORY_LABELS[lang][c] for c in selected_categories], default=cp(lang, "all"))
     visible_categories = [
@@ -528,9 +651,9 @@ def render_dashboard(page: str = "overview"):
     label_candidates["label_priority"] = label_candidates["net_change"].abs()
     label_candidates = label_candidates.sort_values("label_priority", ascending=False)
     if not show_all_chart_labels:
-        label_candidates = label_candidates.head(6)
+        label_candidates = label_candidates.head(12 if chart_scope == "leaders" else 6)
     direct_label_keys = set(zip(label_candidates["symbol"], label_candidates["broker_category"]))
-    fig = go.Figure(); marker_symbols = {"qian_kun": "diamond", "institution": "circle", "retail": "triangle-up"}
+    fig = go.Figure(); marker_symbols = {"qian_kun": "diamond", "hot_money": "star", "institution": "circle", "retail": "triangle-up"}
     for category in visible_categories:
         block = map_category_rows[map_category_rows["broker_category"].eq(category)]
         if block.empty: continue
@@ -575,10 +698,10 @@ def render_dashboard(page: str = "overview"):
         textfont={"size": 10},
         hovertext=divergence_names,
         customdata=np.stack([map_wide["qian_kun_signal"], map_wide["divergence_score"], map_wide["three_way_consensus"]], axis=-1),
-        hovertemplate=("%{hovertext}<br>机构 %{x:+.2f}<br>散户代理 %{y:+.2f}<br>乾坤 %{customdata[0]:+.2f}<br>分歧 %{customdata[1]:.2f}σ<extra></extra>" if lang == "zh" else "%{hovertext}<br>Institution %{x:+.2f}<br>Retail proxy %{y:+.2f}<br>Qian Kun %{customdata[0]:+.2f}<br>Divergence %{customdata[1]:.2f}σ<extra></extra>"),
+        hovertemplate=("%{hovertext}<br>机构 %{x:+.2f}<br>散户代理 %{y:+.2f}<br>外资 %{customdata[0]:+.2f}<br>分歧 %{customdata[1]:.2f}σ<extra></extra>" if lang == "zh" else "%{hovertext}<br>Institution %{x:+.2f}<br>Retail proxy %{y:+.2f}<br>Foreign %{customdata[0]:+.2f}<br>Divergence %{customdata[1]:.2f}σ<extra></extra>"),
         marker={"size": 18 + map_wide["divergence_score"].clip(0,3)*8, "symbol":"diamond", "color":map_wide["qian_kun_signal"],
                 "colorscale":[[0,"#a85d65"],[.5,"#e6e2d8"],[1,"#29756c"]], "cmin":-2,"cmax":2,
-                "colorbar":{"title":"乾坤" if lang == "zh" else "Qian Kun"}, "line":{"color":"#fff","width":1}}))
+                "colorbar":{"title":"外资" if lang == "zh" else "Foreign"}, "line":{"color":"#fff","width":1}}))
     fig2.add_hline(y=0,line_dash="dot",line_color="#8b959b"); fig2.add_vline(x=0,line_dash="dot",line_color="#8b959b")
     fig2.update_layout(height=480,paper_bgcolor="#fff",plot_bgcolor="#fff",margin={"l":50,"r":30,"t":20,"b":45},
                        xaxis_title="机构信号" if lang=="zh" else "Institution signal", yaxis_title="散户信号" if lang=="zh" else "Retail signal")
@@ -596,11 +719,4 @@ def render_dashboard(page: str = "overview"):
     st.markdown(f'<div class="caveat">{cp(lang,"data_limit")}</div>', unsafe_allow_html=True)
 
 
-navigation = st.navigation([
-    st.Page(lambda: render_dashboard("overview"), title="全景日报" if lang == "zh" else "Overview",
-            default=True),
-    st.Page(lambda: render_dashboard("detail"), title=cp(lang, "detail"), url_path="instrument"),
-    st.Page(render_broker_page, title=cp(lang, "broker"), url_path="brokers"),
-    st.Page(render_status_page, title=cp(lang, "status"), url_path="data-status"),
-], position="top")
 navigation.run()

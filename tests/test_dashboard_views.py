@@ -1,6 +1,11 @@
 import pandas as pd
 
-from dashboard_views import broker_profile_rows, build_broker_profiles, build_snapshot
+from dashboard_views import (
+    broker_profile_rows,
+    build_broker_profiles,
+    build_snapshot,
+    select_sector_leaders,
+)
 
 
 def test_broker_profiles_remove_placeholders_and_prefer_largest_seat():
@@ -22,6 +27,26 @@ def test_broker_profiles_remove_placeholders_and_prefer_largest_seat():
     assert options == ["Large", "Small"]
     assert "-" not in latest["broker"].tolist()
     assert profile.iloc[0]["net_position"] == 20
+
+
+def test_sector_leaders_keeps_top_n_from_every_sector():
+    wide = pd.DataFrame([
+        {"symbol": "CU", "sector": "有色", "divergence_score": 2.0,
+         "qian_kun_signal": 1.0, "qian_kun_long_position": 100, "qian_kun_short_position": 80},
+        {"symbol": "AL", "sector": "有色", "divergence_score": 1.0,
+         "qian_kun_signal": 1.5, "qian_kun_long_position": 200, "qian_kun_short_position": 100},
+        {"symbol": "ZN", "sector": "有色", "divergence_score": 0.5,
+         "qian_kun_signal": 2.0, "qian_kun_long_position": 300, "qian_kun_short_position": 200},
+        {"symbol": "RB", "sector": "黑色", "divergence_score": 1.5,
+         "qian_kun_signal": 0.5, "qian_kun_long_position": 50, "qian_kun_short_position": 40},
+        {"symbol": "HC", "sector": "黑色", "divergence_score": 1.2,
+         "qian_kun_signal": 0.8, "qian_kun_long_position": 80, "qian_kun_short_position": 60},
+    ])
+
+    result = select_sector_leaders(wide, top_n=2)
+
+    assert set(result["symbol"]) == {"CU", "AL", "RB", "HC"}
+    assert result.groupby("sector").size().to_dict() == {"有色": 2, "黑色": 2}
 
 
 def test_snapshot_keeps_latest_contract_and_aggregate_history():
