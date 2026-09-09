@@ -7,6 +7,7 @@ import pandas as pd
 
 from config import SYMBOL_META
 from i18n import instrument_name, sector_name, signal_name
+from pipeline.clean import is_valid_broker
 
 INK = "#17222b"
 MUTED = "#73808a"
@@ -17,28 +18,154 @@ ROSE = "#b45f6a"
 GRID = "#dfe5e7"
 
 
+def build_broker_profiles(positions: pd.DataFrame, selected_date) -> tuple[pd.DataFrame, list[str]]:
+    """Return the latest meaningful broker rows and brokers ordered by gross position."""
+    required = {"trade_date", "source", "symbol", "broker"}
+    value_columns = ["long_position", "short_position", "long_change", "short_change"]
+    if positions.empty or not required.union(value_columns).issubset(positions.columns):
+        return pd.DataFrame(columns=list(positions.columns)), []
+    real = positions[
+        positions["source"].ne("demo") & positions["trade_date"].dt.date.le(selected_date)
+    ].copy()
+    real["broker"] = real["broker"].map(lambda value: str(value).strip())
+    real = real[real["broker"].map(is_valid_broker)]
+    for column in value_columns:
+        real[column] = pd.to_numeric(real[column], errors="coerce").fillna(0)
+    real = real[real[value_columns].abs().sum(axis=1).gt(0)]
+    if real.empty:
+        return real, []
+    real["latest"] = real.groupby("symbol")["trade_date"].transform("max")
+    real = real[real["trade_date"].eq(real["latest"])].copy()
+    scores = real.assign(
+        gross=real["long_position"].abs() + real["short_position"].abs(),
+        activity=real["long_change"].abs() + real["short_change"].abs(),
+    ).groupby("broker", as_index=False).agg(gross=("gross", "sum"), activity=("activity", "sum"))
+    options = scores.sort_values(["gross", "activity", "broker"], ascending=[False, False, True])["broker"].tolist()
+    return real, options
+
+
+def broker_profile_rows(latest_positions: pd.DataFrame, broker: str) -> pd.DataFrame:
+    """Aggregate one broker by instrument and suppress zero-only chart rows."""
+    columns = ["symbol", "long_position", "short_position", "long_change", "short_change"]
+    if latest_positions.empty:
+        return pd.DataFrame(columns=columns + ["net_position", "net_change"])
+    profile = latest_positions[latest_positions["broker"].eq(broker)].groupby("symbol", as_index=False).agg(
+        long_position=("long_position", "sum"), short_position=("short_position", "sum"),
+        long_change=("long_change", "sum"), short_change=("short_change", "sum"),
+    )
+    profile = profile[profile[columns[1:]].abs().sum(axis=1).gt(0)].copy()
+    profile["net_position"] = profile["long_position"] - profile["short_position"]
+    profile["net_change"] = profile["long_change"] - profile["short_change"]
+    return profile.reset_index(drop=True)
+
+
 def build_snapshot(
     metrics: pd.DataFrame,
     positions: pd.DataFrame,
     position_history: pd.DataFrame,
     selected_date,
     selected_sectors: list[str],
+    contracts: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Build one honest as-of row per symbol from the latest real observation."""
     eligible = metrics[(metrics["trade_date"].dt.date.le(selected_date)) & metrics["source"].ne("demo")].copy()
     eligible["sector"] = eligible["symbol"].map(lambda s: SYMBOL_META.get(s, (s, "其他", ""))[1])
     eligible = eligible[eligible["sector"].isin(selected_sectors)]
     if eligible.empty:
-        return eligible
-    eligible["latest_date"] = eligible.groupby("symbol")["trade_date"].transform("max")
-    current = eligible[eligible["trade_date"].eq(eligible["latest_date"])].copy()
-    current = current.sort_values(["symbol", "open_interest"]).drop_duplicates("symbol", keep="last")
+        current = pd.DataFrame()
+    else:
+        eligible["latest_date"] = eligible.groupby("symbol")["trade_date"].transform("max")
+        current = eligible[eligible["trade_date"].eq(eligible["latest_date"])].copy()
+        current = current.sort_values(["symbol", "open_interest"]).drop_duplicates("symbol", keep="last")
+        current["consensus_available"] = True
+        if "price_source" not in current:
+            current["price_source"] = current["source"]
 
     history = position_history[
-        position_history["trade_date"].dt.date.le(selected_date) & position_history["symbol"].isin(current["symbol"])
+        position_history["trade_date"].dt.date.le(selected_date) & position_history["source"].ne("demo")
     ].copy()
+    history["sector"] = history["symbol"].map(lambda s: SYMBOL_META.get(s, (s, "其他", ""))[1])
+    history = history[history["sector"].isin(selected_sectors)]
     if not history.empty:
         history["priority"] = history["source"].eq("official-aggregate-via-akshare").astype(int)
+        latest_seed = history.sort_values(["symbol", "trade_date", "priority"]).drop_duplicates(
+            "symbol", keep="last"
+        )
+        existing_symbols = set(current["symbol"]) if not current.empty else set()
+        latest_seed = latest_seed[~latest_seed["symbol"].isin(existing_symbols)]
+        if not latest_seed.empty:
+            prices = pd.DataFrame()
+            if contracts is not None and not contracts.empty:
+                prices = contracts[
+                    contracts["trade_date"].dt.date.le(selected_date)
+                    & contracts["source"].ne("demo")
+                    & contracts["close"].gt(0)
+                    & contracts["symbol"].isin(latest_seed["symbol"])
+                ].copy()
+                prices = prices.sort_values(["symbol", "trade_date", "open_interest"]).drop_duplicates(
+                    "symbol", keep="last"
+                ).set_index("symbol")
+            seed_rows = []
+            for row in latest_seed.itertuples(index=False):
+                price = prices.loc[row.symbol] if row.symbol in prices.index else None
+                seed_rows.append({
+                    "trade_date": row.trade_date,
+                    "exchange": row.exchange,
+                    "symbol": row.symbol,
+                    "contract": str(price["contract"]) if price is not None else row.symbol,
+                    "close": float(price["close"]) if price is not None else np.nan,
+                    "open_interest": float(price["open_interest"]) if price is not None else row.top20_long + row.top20_short,
+                    "top20_long": np.nan,
+                    "top20_short": np.nan,
+                    "net_position": np.nan,
+                    "net_position_ratio": np.nan,
+                    "delta_net_1d": 0.0,
+                    "delta_net_5d": 0.0,
+                    "delta_net_20d": 0.0,
+                    "price_change_1d": 0.0,
+                    "consensus": np.nan,
+                    "bull_score": 0.0,
+                    "divergence_score": 0.0,
+                    "source": row.source,
+                    "price_source": str(price["source"]) if price is not None else "unavailable",
+                    "consensus_available": False,
+                    "sector": row.sector,
+                })
+            current = pd.concat([current, pd.DataFrame(seed_rows)], ignore_index=True, sort=False)
+    if current.empty:
+        return current
+
+    # Price and position observations are intentionally independent. A current
+    # quote may coexist with an older exchange ranking and must keep its own date.
+    if contracts is not None and not contracts.empty:
+        prices = contracts[
+            contracts["trade_date"].dt.date.le(selected_date)
+            & contracts["source"].ne("demo")
+            & contracts["close"].gt(0)
+            & contracts["symbol"].isin(current["symbol"])
+        ].copy()
+        if not prices.empty:
+            prices = prices.sort_values(["symbol", "trade_date", "open_interest"]).drop_duplicates(
+                "symbol", keep="last"
+            )
+            prices = prices[["symbol", "trade_date", "close", "open_interest", "source"]].rename(columns={
+                "trade_date": "price_date", "close": "latest_close",
+                "open_interest": "latest_open_interest", "source": "latest_price_source",
+            })
+            current = current.merge(prices, on="symbol", how="left")
+            current["close"] = current["latest_close"].where(current["latest_close"].notna(), current["close"])
+            current["open_interest"] = current["latest_open_interest"].where(
+                current["latest_open_interest"].notna(), current["open_interest"]
+            )
+            current["price_source"] = current["latest_price_source"].where(
+                current["latest_price_source"].notna(), current["price_source"]
+            )
+    if "price_date" not in current:
+        current["price_date"] = current["trade_date"]
+    current["price_date"] = pd.to_datetime(current["price_date"].fillna(current["trade_date"]))
+
+    history = history[history["symbol"].isin(current["symbol"])].copy()
+    if not history.empty:
         history = history.sort_values(["symbol", "trade_date", "priority"]).drop_duplicates(
             ["symbol", "trade_date"], keep="last"
         )
@@ -58,7 +185,10 @@ def build_snapshot(
             ("top20_long", "history_long"), ("top20_short", "history_short"),
             ("net_position", "history_net"), ("net_position_ratio", "history_ratio"),
         ):
-            current[target] = current[source].combine_first(current[target])
+            current[target] = current[source].where(current[source].notna(), current[target])
+        aggregate_override = current["position_date"].notna() & current["position_date"].ne(current["trade_date"])
+        current.loc[aggregate_override, "consensus"] = np.nan
+        current.loc[aggregate_override, "consensus_available"] = False
     else:
         current["position_date"] = current["trade_date"]
         current["position_source"] = current["source"]
@@ -73,10 +203,12 @@ def build_snapshot(
         pos = pos[pos["trade_date"].eq(pos["latest_date"])]
         changes = pos.groupby("symbol", as_index=False).agg(
             long_change=("long_change", "sum"), short_change=("short_change", "sum"),
-            active_brokers=("broker", "nunique"),
+            active_brokers=("broker", "nunique"), change_date=("trade_date", "max"),
         )
         changes["net_change"] = changes["long_change"] - changes["short_change"]
         current = current.merge(changes, on="symbol", how="left")
+        mismatched_change = current["change_date"].notna() & current["change_date"].ne(current["position_date"])
+        current.loc[mismatched_change, ["long_change", "short_change", "net_change", "active_brokers"]] = np.nan
     for column in ("long_change", "short_change", "net_change", "active_brokers"):
         if column not in current:
             current[column] = 0.0
@@ -98,14 +230,15 @@ def build_snapshot(
     current["bull_score"] = (
         zscore(current["net_position_ratio"]) * 0.5
         + zscore(current["delta_net_1d"]) * 0.3
-        + zscore(current["consensus"]) * 0.2
+        + zscore(current["consensus"].fillna(0)) * 0.2
     )
     current["signal"] = np.select(
         [
+            ~current["consensus_available"].fillna(False),
             (current["net_position_ratio"] > 0) & (current["consensus"] > 0),
             (current["net_position_ratio"] < 0) & (current["consensus"] < 0),
         ],
-        ["共同净多", "共同净空"],
+        ["仅汇总数据", "共同净多", "共同净空"],
         default="机构分歧",
     )
     return current.sort_values(["sector", "symbol"]).reset_index(drop=True)
@@ -133,7 +266,9 @@ def sector_cards(snapshot: pd.DataFrame, lang: str = "zh") -> str:
     for sector, group in snapshot.groupby("sector", sort=True):
         ratio = float(group["net_position_ratio"].mean() * 100)
         change = float(group["delta_net_1d"].sum() / 10_000)
-        consensus = float(group["consensus"].mean() * 100)
+        consensus_values = group["consensus"].dropna()
+        consensus = float(consensus_values.mean() * 100) if not consensus_values.empty else np.nan
+        consensus_text = signed(consensus) if pd.notna(consensus) else "—"
         strongest = group.loc[group["bull_score"].idxmax(), "symbol"]
         weakest = group.loc[group["bull_score"].idxmin(), "symbol"]
         sector_label = sector_name(sector, lang)
@@ -147,10 +282,10 @@ def sector_cards(snapshot: pd.DataFrame, lang: str = "zh") -> str:
             f'<div><h3>{escape(sector_label)}</h3><small>{escape(count_label)}</small></div>'
             '<div class="sector-values">'
             f'<span>{net_label}<b>{signed(ratio)}</b></span><span>{change_label}<b>{signed(change)}{change_suffix}</b></span>'
-            f'<span>{consistency_label}<b>{signed(consensus)}</b></span></div>'
+            f'<span>{consistency_label}<b>{consensus_text}</b></span></div>'
             '<div class="direction-scale"><i></i>'
             f'{_marker(ratio, -15, 15, BLUE)}{_marker(change, -15, 15, GOLD)}'
-            f'{_marker(consensus, -100, 100, TEAL)}</div>'
+            f'{_marker(consensus, -100, 100, TEAL) if pd.notna(consensus) else ""}</div>'
             f'<div class="scale-legend"><span>{net_label}</span><span>{change_label}</span><span>{consistency_label}</span></div></div>'
         )
     return '<div class="sector-grid">' + "".join(cards) + "</div>"
@@ -216,22 +351,23 @@ def panorama_table(
         trend_key = "— Net　— Price" if lang == "en" else "— 净仓　— 价格"
         lots_unit = "10k lots" if lang == "en" else "万手"
         short_unit = "10k" if lang == "en" else "万"
+        consensus_text = f"{row.consensus:+.0%}" if pd.notna(row.consensus) else "—"
         rows.append(
             '<div class="pano-row">'
-            f'<div class="instrument"><b>{escape(display_name)}</b><span>{row.symbol} · {escape(display_sector)}</span>{stale}</div>'
+            f'<div class="instrument"><b>{escape(display_name)}</b><span>{escape(display_sector) if lang == "zh" else f"{row.symbol} · {escape(display_sector)}"}</span>{stale}</div>'
             f'<div>{spark}<small class="spark-key">{trend_key}</small></div>'
             f'<div class="gross"><b>{row.gross_position / 10_000:,.1f}</b><span>{lots_unit}</span></div>'
             '<div class="ratio-gauge"><i></i>'
             f'<span style="left:{gauge_pos:.1f}%"></span><b>{row.net_position_ratio:+.1%}</b></div>'
             f'<div class="bar-cell">{_signed_bar(row.net_position, max_net, BLUE)}<b>{row.net_position / 10_000:+.1f}{short_unit}</b></div>'
             f'<div class="bar-cell">{_signed_bar(row.delta_net_1d, max_delta, GOLD)}<b>{row.delta_net_1d / 10_000:+.1f}{short_unit}</b></div>'
-            f'<div class="consensus"><b>{row.consensus:+.0%}</b><span>{escape(signal_name(row.signal, lang))}</span></div>'
+            f'<div class="consensus"><b>{consensus_text}</b><span>{escape(signal_name(row.signal, lang))}</span></div>'
             '</div>'
         )
     labels = (
         ("Instrument", "Net / Price Trend", "Top 20 Gross", "Net Strength", "Net Position", "1-Day Change", "Consensus")
         if lang == "en"
-        else ("核心品种", "净仓 / 价格趋势", "Top20体量", "净仓强度", "净持仓", "当日变化", "席位一致性")
+        else ("核心品种", "净仓 / 价格趋势", "前20名体量", "净仓强度", "净持仓", "当日变化", "席位一致性")
     )
     header = '<div class="pano-head">' + "".join(f"<span>{label}</span>" for label in labels) + "</div>"
     return '<div class="panorama">' + header + "".join(rows) + "</div>"
@@ -252,8 +388,8 @@ def key_change_cards(snapshot: pd.DataFrame, limit: int = 8, lang: str = "zh") -
             )
         cards.append(
             '<div class="change-card">'
-            f'<h3>{escape(instrument_name(row.symbol, lang, row.name))} <small>{row.symbol}</small></h3>'
-            f'<p>Top 20 {row.gross_position / 10_000:,.1f} {"10k lots" if lang == "en" else "万手"} · {escape(signal_name(row.signal, lang))}</p>'
+            f'<h3>{escape(instrument_name(row.symbol, lang, row.name))} {f"<small>{row.symbol}</small>" if lang == "en" else ""}</h3>'
+            f'<p>{"Top 20" if lang == "en" else "前20名"} {row.gross_position / 10_000:,.1f} {"10k lots" if lang == "en" else "万手"} · {escape(signal_name(row.signal, lang))}</p>'
             + "".join(lines) + '</div>'
         )
     return '<div class="change-grid">' + "".join(cards) + "</div>"

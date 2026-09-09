@@ -4,13 +4,20 @@ import re
 
 import pandas as pd
 
-from config import BROKER_ALIASES
+from services.broker_normalizer import normalize_broker_name
+
+INVALID_BROKER_NAMES = frozenset({"", "-", "--", "---", "—", "–", "nan", "none", "null", "合计", "总计"})
 
 
 def canonical_broker(value: object) -> str:
-    name = re.sub(r"[（(].*?[）)]", "", str(value or "")).strip()
-    name = name.replace("有限公司", "").replace("股份", "").strip()
-    return BROKER_ALIASES.get(str(value).strip(), BROKER_ALIASES.get(name, name))
+    """Backward-compatible entry point for provider normalization."""
+    return normalize_broker_name(value)
+
+
+def is_valid_broker(value: object) -> bool:
+    """Reject exchange placeholders and totals that are not actual broker seats."""
+    name = canonical_broker(value).strip()
+    return name.lower() not in INVALID_BROKER_NAMES and "合计" not in name and "总计" not in name
 
 
 def symbol_from_contract(contract: object) -> str:

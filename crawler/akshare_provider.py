@@ -7,7 +7,12 @@ import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import DEFAULT_SYMBOLS, SYMBOL_META
-from pipeline.clean import canonical_broker, numeric, symbol_from_contract
+from pipeline.clean import (
+    canonical_broker,
+    is_valid_broker,
+    numeric,
+    symbol_from_contract,
+)
 
 
 class ProviderError(RuntimeError):
@@ -47,12 +52,20 @@ def _side(frame: pd.DataFrame, side: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["broker", f"{side}_position", f"{side}_change"])
     out = pd.DataFrame({"broker": frame[broker_col].map(canonical_broker), f"{side}_position": numeric(frame[pos_col]),
                         f"{side}_change": numeric(frame[chg_col]) if chg_col else 0.0})
-    out = out[out["broker"].ne("") & ~out["broker"].str.contains("合计")]
+    out = out[out["broker"].map(is_valid_broker)]
     return out.groupby("broker", as_index=False).sum(numeric_only=True)
 
 
+def _drop_empty_rank_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    value_columns = ["long_position", "short_position", "long_change", "short_change"]
+    activity = frame[value_columns].abs().sum(axis=1)
+    return frame[activity.gt(0)].reset_index(drop=True)
+
+
 def normalize_rank_table(raw: pd.DataFrame, exchange: str, trade_date: date, contract: str) -> pd.DataFrame:
-    merged = _side(raw, "long").merge(_side(raw, "short"), how="outer", on="broker").fillna(0)
+    merged = _drop_empty_rank_rows(
+        _side(raw, "long").merge(_side(raw, "short"), how="outer", on="broker").fillna(0)
+    )
     if merged.empty:
         raise ProviderError(f"{exchange} {contract} 返回字段无法识别: {list(raw.columns)}")
     merged.insert(0, "trade_date", pd.Timestamp(trade_date))
@@ -65,7 +78,9 @@ def normalize_rank_table(raw: pd.DataFrame, exchange: str, trade_date: date, con
 
 
 def _normalize_sina_rank(long_raw: pd.DataFrame, short_raw: pd.DataFrame, trade_date: date, contract: str) -> pd.DataFrame:
-    merged = _side(long_raw, "long").merge(_side(short_raw, "short"), how="outer", on="broker").fillna(0)
+    merged = _drop_empty_rank_rows(
+        _side(long_raw, "long").merge(_side(short_raw, "short"), how="outer", on="broker").fillna(0)
+    )
     if merged.empty:
         raise ProviderError(f"新浪备用源 {contract} 未返回席位排名")
     merged.insert(0, "trade_date", pd.Timestamp(trade_date))

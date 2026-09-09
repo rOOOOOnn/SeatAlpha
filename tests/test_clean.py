@@ -1,9 +1,17 @@
-from pipeline.clean import canonical_broker, classify_behavior, symbol_from_contract
+from pipeline.clean import (
+    canonical_broker,
+    classify_behavior,
+    is_valid_broker,
+    symbol_from_contract,
+)
 
 
 def test_broker_normalization():
     assert canonical_broker("中信期货有限公司") == "中信期货"
     assert canonical_broker("永安期货（代客）") == "永安期货"
+    assert not is_valid_broker("-")
+    assert not is_valid_broker("合计")
+    assert is_valid_broker("中信期货有限公司")
 
 
 def test_contract_symbol():

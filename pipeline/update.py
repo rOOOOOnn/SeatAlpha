@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,18 +14,44 @@ from crawler.akshare_provider import (
     fetch_dce_sina_fallback,
     fetch_position_history,
     fetch_positions,
-    fetch_price_history,
+)
+from crawler.akshare_provider import (
+    fetch_price_history as fetch_sina_price_history,
+)
+from crawler.ifind_provider import (
+    IFindError,
+    enrich_contracts,
+)
+from crawler.ifind_provider import (
+    fetch_daily as fetch_ifind_daily,
+)
+from crawler.ifind_provider import (
+    fetch_position_history as fetch_ifind_position_history,
+)
+from crawler.ifind_provider import (
+    fetch_price_history as fetch_ifind_price_history,
+)
+from crawler.ifind_provider import (
+    is_configured as ifind_is_configured,
 )
 from metrics.signals import calculate_metrics
 from pipeline.seed_demo import seed
 
+DATA_PUBLICATION_CUTOFF_HOUR = 20
 
-def latest_weekday(today: date | None = None) -> date:
-    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+
+def latest_weekday(today: date | None = None, *, now: datetime | None = None) -> date:
+    """Return the latest trade date whose end-of-day rankings should be published.
+
+    The dashboard's observation date may be today, while exchange member rankings
+    are still being compiled.  Treat the current business day as complete only
+    after the evening publication window.
+    """
+    now = now or datetime.now(ZoneInfo("Asia/Shanghai"))
     result = today or now.date()
     while result.weekday() >= 5:
         result -= timedelta(days=1)
-    if result == now.date() and now.hour < 16:
+    if result == now.date() and now.hour < DATA_PUBLICATION_CUTOFF_HOUR:
         result -= timedelta(days=1)
         while result.weekday() >= 5:
             result -= timedelta(days=1)
@@ -45,7 +72,7 @@ def _backfill_main_prices(path=DB_PATH) -> None:
         SELECT * EXCLUDE (rn) FROM (
             SELECT *, row_number() OVER (PARTITION BY symbol ORDER BY trade_date DESC, open_interest DESC) rn
             FROM contracts
-            WHERE is_main AND source NOT IN ('demo', 'sina-price-history')
+            WHERE is_main AND source NOT IN ('demo', 'sina-price-history', 'ifind-price-history')
         ) WHERE rn = 1
     """, path=path)
     for row in mains.itertuples(index=False):
@@ -54,44 +81,41 @@ def _backfill_main_prices(path=DB_PATH) -> None:
         if row.source == "sina-fallback":
             desired_last = latest_weekday()
             history_end = desired_last + timedelta(days=1)
-        existing = query("SELECT count(*) n, max(trade_date) last_date FROM contracts WHERE contract=? AND exchange=? AND source='sina-price-history'",
-                         [row.contract, row.exchange], path)
+        preferred_source = "ifind-price-history" if ifind_is_configured() else "sina-price-history"
+        existing = query(
+            "SELECT count(*) n, max(trade_date) last_date FROM contracts "
+            "WHERE contract=? AND exchange=? AND source=?",
+            [row.contract, row.exchange, preferred_source], path,
+        )
         last_date = existing.iloc[0]["last_date"]
         if int(existing.iloc[0]["n"]) >= 20 and pd.notna(last_date) and pd.Timestamp(last_date).date() >= desired_last:
             continue
         try:
-            history = fetch_price_history(str(row.contract), str(row.exchange), history_end)
+            history = fetch_ifind_price_history(str(row.contract), str(row.exchange), history_end)
+        except IFindError:
+            try:
+                history = fetch_sina_price_history(str(row.contract), str(row.exchange), history_end)
+            except Exception:  # noqa: BLE001, S112 - optional fallback cannot block rank updates.
+                continue
+        try:
             if not history.empty:
                 upsert_frame("contracts", history, ["trade_date", "exchange", "contract"], path)
         except Exception:  # noqa: BLE001, S112 - optional enrichment; rank updates remain authoritative.
             continue
 
 
-def _restore_rank_sources(path=DB_PATH) -> None:
-    """A rank-bearing contract row is authoritative over price-only enrichment on the same date."""
-    with connect(path) as con:
-        con.execute("""
-            UPDATE contracts AS c
-            SET source = p.source
-            FROM (
-                SELECT DISTINCT trade_date, exchange, symbol, contract, source
-                FROM broker_positions
-                WHERE source <> 'demo'
-            ) AS p
-            WHERE c.trade_date = p.trade_date
-              AND c.exchange = p.exchange
-              AND c.symbol = p.symbol
-              AND c.contract = p.contract
-        """)
-
-
 def _sync_position_snapshots(metrics: pd.DataFrame, path=DB_PATH) -> None:
     """Keep real contract snapshots available even when aggregate history is unavailable."""
     if metrics.empty:
         return
-    sources = query("SELECT trade_date, exchange, symbol, contract, source FROM contracts", path=path)
+    sources = query("""
+        SELECT trade_date, exchange, symbol, contract, max(source) AS source
+        FROM broker_positions
+        WHERE source <> 'demo'
+        GROUP BY trade_date, exchange, symbol, contract
+    """, path=path)
     snapshots = metrics.merge(sources, on=["trade_date", "exchange", "symbol", "contract"], how="inner")
-    snapshots = snapshots[~snapshots["source"].isin(["demo", "sina-price-history"])].copy()
+    snapshots = snapshots[snapshots["source"].ne("demo")].copy()
     columns = ["trade_date", "exchange", "symbol", "contract", "top20_long", "top20_short",
                "net_position", "net_position_ratio", "source"]
     if not snapshots.empty:
@@ -101,6 +125,40 @@ def _sync_position_snapshots(metrics: pd.DataFrame, path=DB_PATH) -> None:
 def _backfill_position_history(target: date, path=DB_PATH, lookback_days: int = 28) -> None:
     """Backfill real Top20 history one exchange at a time so failures stay isolated."""
     for exchange in EXCHANGES:
+        # CFFEX uses separate index/bond ranking reports. Daily snapshots are
+        # persisted by _sync_position_snapshots; historical backfill is not mixed.
+        if exchange == "CFFEX":
+            continue
+        if ifind_is_configured():
+            mains = query("""SELECT DISTINCT contract FROM contracts WHERE exchange=? AND trade_date=?
+                AND is_main AND source <> 'demo'""", [exchange, target], path)
+            completed = 0
+            pending = []
+            for contract in mains.contract:
+                existing_ifind = query("""SELECT count(*) n, max(trade_date) last_date FROM position_history
+                    WHERE exchange=? AND contract=? AND source='ifind-position-history'""", [exchange, contract], path)
+                if int(existing_ifind.iloc[0]["n"]) >= 15 and pd.notna(existing_ifind.iloc[0]["last_date"]) and pd.Timestamp(existing_ifind.iloc[0]["last_date"]).date() >= target:
+                    completed += 1
+                    continue
+                pending.append(contract)
+
+            def fetch_history(contract: str, exchange: str = exchange) -> pd.DataFrame:
+                return fetch_ifind_position_history(
+                    contract, exchange, target-timedelta(days=lookback_days), target
+                )
+
+            with ThreadPoolExecutor(max_workers=min(6, max(len(pending), 1))) as executor:
+                futures = {executor.submit(fetch_history, contract): contract for contract in pending}
+                for future in as_completed(futures):
+                    contract = futures[future]
+                    try:
+                        history = future.result()
+                        upsert_frame("position_history", history, ["trade_date", "exchange", "symbol", "contract"], path)
+                        completed += 1
+                    except IFindError as exc:
+                        _log(exchange, target, "partial", 0, f"{contract} iFinD 持仓历史不可用：{exc}", path, "ifind-position-history")
+            if len(mains) and completed == len(mains):
+                continue
         # DCE's legacy public download currently returns HTML instead of its documented ZIP.
         # Its latest contract snapshot is preserved by _sync_position_snapshots.
         if exchange == "DCE":
@@ -114,52 +172,151 @@ def _backfill_position_history(target: date, path=DB_PATH, lookback_days: int = 
             continue
         try:
             history = fetch_position_history(exchange, target - timedelta(days=lookback_days), target)
+            preferred = query("SELECT trade_date, exchange, symbol, contract FROM position_history WHERE source LIKE 'ifind%'", path=path)
+            if not preferred.empty and not history.empty:
+                keys = ["trade_date", "exchange", "symbol", "contract"]
+                history = history.merge(preferred.assign(_preferred=True), on=keys, how="left")
+                history = history[history["_preferred"].isna()].drop(columns="_preferred")
             upsert_frame("position_history", history, ["trade_date", "exchange", "symbol", "contract"], path)
         except Exception:  # noqa: BLE001, S112 - optional history must not block daily updates.
             continue
 
 
-def update(trade_date: date | None = None, force: bool = False, path=DB_PATH) -> dict[str, str]:
+def update(
+    trade_date: date | None = None,
+    force: bool = False,
+    path=DB_PATH,
+    *,
+    backfill_history: bool = True,
+    missing_only: bool = False,
+) -> dict[str, str]:
+    """Update the latest daily snapshot, optionally running slow history backfills."""
     init_db(path)
     target, status = trade_date or latest_weekday(), {}
     for exchange in EXCHANGES:
-        if not force:
-            existing = query("SELECT count(*) n FROM contracts WHERE trade_date=? AND exchange=? AND source <> 'demo'", [target, exchange], path)
-            if int(existing.iloc[0]["n"]) > 0:
+        requested_symbols: set[str] | None = None
+        if missing_only:
+            active = query(
+                """SELECT DISTINCT symbol FROM contracts
+                WHERE trade_date=? AND exchange=? AND source<>'demo'
+                AND is_main AND open_interest>0""",
+                [target, exchange], path,
+            )
+            if not active.empty:
+                ranked = query(
+                    """SELECT DISTINCT symbol FROM broker_positions
+                    WHERE trade_date=? AND exchange=? AND source<>'demo'""",
+                    [target, exchange], path,
+                )
+                requested_symbols = set(active["symbol"]) - set(ranked["symbol"])
+                if not requested_symbols:
+                    status[exchange] = "已是最新"
+                    continue
+        if not force and not missing_only:
+            catalog_attempt = query("""SELECT count(*) n FROM update_log WHERE trade_date=? AND exchange=?
+                AND status IN ('success', 'partial') AND message LIKE '%全品种目录%'""",
+                [target, exchange], path)
+            if int(catalog_attempt.iloc[0]["n"]) > 0:
                 status[exchange] = "已是最新"
                 continue
         try:
-            actual_date, update_source, update_message = target, "official-via-akshare", "更新成功"
+            actual_date, update_message = target, "全品种目录更新成功"
+            ifind_daily = False
+            ifind_error = None
             try:
-                contracts, positions = fetch_contracts(exchange, target), fetch_positions(exchange, target)
-                contracts = contracts[contracts["contract"].isin(set(positions["contract"]))].copy()
-                if contracts.empty:
-                    raise RuntimeError("行情合约与持仓排名合约无法匹配")
-                contracts["is_main"] = False
-                contracts.loc[contracts.groupby("symbol")["open_interest"].idxmax(), "is_main"] = True
+                contracts, positions, warnings = fetch_ifind_daily(
+                    exchange, target, requested_symbols
+                )
+                ifind_daily = True
+                missing_symbols = set(contracts.loc[contracts["is_main"], "symbol"]) - set(positions["symbol"])
+                if missing_symbols and exchange != "DCE":
+                    try:
+                        public_positions = fetch_positions(exchange, target)
+                        supplement = public_positions[public_positions["symbol"].isin(missing_symbols)]
+                        if not supplement.empty:
+                            positions = pd.concat([positions, supplement], ignore_index=True)
+                            missing_symbols -= set(supplement["symbol"])
+                    except Exception:  # noqa: BLE001, S110 - per-product fallback is optional.
+                        pass
+                warnings = [warning for warning in warnings if warning.split(":", 1)[0] in missing_symbols]
+                if warnings:
+                    update_message += "；部分品种排名不可用：" + "；".join(warnings)
+            except IFindError as exc:
+                ifind_error = exc
+                update_message += f"；iFinD 日数据不可用（{exc}），尝试公开源"
+            try:
+                if ifind_daily:
+                    pass
+                elif exchange == "CFFEX":
+                    raise IFindError(f"中金所仅使用已验证的 iFinD 排名接口：{ifind_error}")
+                else:
+                    contracts, positions = fetch_contracts(exchange, target), fetch_positions(exchange, target)
+                    contracts = contracts[contracts["contract"].isin(set(positions["contract"]))].copy()
+                    if contracts.empty:
+                        raise RuntimeError("行情合约与持仓排名合约无法匹配")
+                    contracts["is_main"] = False
+                    contracts.loc[contracts.groupby("symbol")["open_interest"].idxmax(), "is_main"] = True
             except Exception:  # Only DCE has a controlled secondary source.
                 if exchange != "DCE":
                     raise
                 contracts, positions, actual_date = fetch_dce_sina_fallback(target)
-                update_source = "sina-fallback"
                 update_message = f"大商所接口异常，已使用备用源；席位数据截至 {actual_date}"
+            try:
+                # Quotes and member rankings have independent clocks. A stale
+                # DCE ranking fallback must never pull the iFinD quote date back
+                # to the ranking's actual date.
+                if not ifind_daily:
+                    contracts = enrich_contracts(contracts, target)
+            except IFindError as exc:
+                update_message += f"；iFinD 行情不可用（{exc}），保留公开行情"
+            price_date = pd.to_datetime(contracts["trade_date"]).max().date()
+            price_sources = "+".join(sorted(contracts["source"].astype(str).unique()))
+            position_sources = "+".join(sorted(positions["source"].astype(str).unique()))
+            update_source = f"price={price_sources}|positions={position_sources}"
+            update_message += (
+                f"；行情={price_sources}（截至 {price_date}）"
+                f"；席位={position_sources}（截至 {actual_date}）"
+            )
             upsert_frame("contracts", contracts, ["trade_date", "exchange", "contract"], path)
-            upsert_frame("broker_positions", positions, ["trade_date", "exchange", "contract", "broker"], path)
+            _replace_position_partitions(positions, path)
             rows = len(contracts) + len(positions)
-            log_status = "success" if actual_date == target else "stale"
+            log_status = "partial" if ifind_daily and warnings else ("success" if actual_date == target else "stale")
             _log(exchange, target, log_status, rows, update_message, path, update_source)
-            status[exchange] = f"成功 · {rows} 行" if actual_date == target else f"备用数据 · 截至 {actual_date}"
+            status[exchange] = (
+                (f"部分成功 · {rows} 行；" + "；".join(warnings) if log_status == "partial" else f"成功 · {rows} 行")
+                if actual_date == target
+                else f"备用数据 · 行情截至 {price_date} · 席位截至 {actual_date}"
+            )
         except Exception as exc:  # noqa: BLE001 - isolate failures so one exchange cannot block the others.
             _log(exchange, target, "failed", 0, str(exc), path)
             status[exchange] = f"失败 · {exc}"
-    _backfill_main_prices(path)
-    _restore_rank_sources(path)
+    if backfill_history:
+        _backfill_main_prices(path)
     metrics = calculate_metrics(query("SELECT * FROM contracts", path=path), query("SELECT * FROM broker_positions", path=path))
     if not metrics.empty:
         upsert_frame("daily_metrics", metrics, ["trade_date", "exchange", "contract"], path)
         _sync_position_snapshots(metrics, path)
-    _backfill_position_history(target, path)
+    if backfill_history:
+        _backfill_position_history(target, path)
     return status
+
+
+def _replace_position_partitions(positions: pd.DataFrame, path=DB_PATH) -> None:
+    """Replace only validated contract/day snapshots atomically, never blend providers."""
+    if positions.empty:
+        return
+    with connect(path) as con:
+        con.register("incoming_positions", positions)
+        columns = ", ".join(f'"{c}"' for c in positions.columns)
+        con.execute("BEGIN TRANSACTION")
+        try:
+            con.execute("""DELETE FROM broker_positions p USING incoming_positions i
+                WHERE p.trade_date=i.trade_date AND p.exchange=i.exchange AND p.contract=i.contract""")
+            con.execute(f"INSERT INTO broker_positions ({columns}) SELECT {columns} FROM incoming_positions")
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
 
 
 def main() -> int:

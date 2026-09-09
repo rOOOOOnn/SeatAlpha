@@ -1,82 +1,112 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from config import DB_PATH, SYMBOL_META
+from config import DB_PATH, EXCHANGES, SYMBOL_META
 from core.db import is_empty, query
-from dashboard_views import (
-    BLUE,
-    GOLD,
-    GRID,
-    INK,
-    ROSE,
-    TEAL,
-    build_snapshot,
-    key_change_cards,
-    panorama_table,
-    section_title,
-    sector_cards,
-)
-from i18n import (
-    behavior_name,
-    instrument_name,
-    log_message,
-    sector_name,
-    signal_name,
-    tr,
-    update_message,
-)
-from pipeline.clean import classify_behavior
+from dashboard_views import broker_profile_rows, build_broker_profiles, build_snapshot
+from i18n import instrument_name, log_message, sector_name, source_name
 from pipeline.seed_demo import seed
-from pipeline.update import update
+from pipeline.update import latest_weekday, update
+from services.broker_classifier import classify_broker, enrich_broker_classification
+from services.data_status import build_current_coverage, historical_source_coverage
+from services.position_aggregator import build_three_category_snapshot
+from settings.broker_classification import (
+    CATEGORY_LABELS,
+    CATEGORY_ORDER,
+    SEAT_CLASSIFICATION,
+)
+from settings.signal_thresholds import SIGNAL_THRESHOLDS
+from ui.copy import cp
+from ui.report_components import (
+    CATEGORY_COLORS,
+    change_column,
+    executive_read,
+    monitor_cards,
+    overview_cards,
+    panorama_rows,
+    section_header,
+    sector_matrix,
+)
 
-st.set_page_config(page_title="SeatAlpha · Futures Positioning Atlas / 机构期货持仓全景", page_icon="◇", layout="wide")
+st.set_page_config(page_title="SeatAlpha", page_icon="◇", layout="wide", initial_sidebar_state="expanded")
+
+EXCHANGE_NAMES_ZH = {
+    "SHFE": "上期所及上期能源",
+    "DCE": "大商所",
+    "CZCE": "郑商所",
+    "GFEX": "广期所",
+    "CFFEX": "中金所",
+}
+
 st.markdown("""
 <style>
-:root{--ink:#17222b;--muted:#73808a;--line:#dfe5e7;--paper:#fff;--wash:#f3f5f5;--blue:#426b88;--gold:#a78331;--teal:#2b7d75;--rose:#b45f6a}
-html,body,[class*="css"]{font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;color:var(--ink)}
-.stApp{background:var(--wash)}.block-container{max-width:1540px;padding:2.2rem 2.3rem 5rem}
-[data-testid="stSidebar"]{background:#f8f9f9;border-right:1px solid var(--line)}
-[data-testid="stSidebar"] .block-container{padding:2rem 1.25rem}.sidebar-brand{padding:.15rem 0 1.4rem;border-bottom:1px solid var(--line);margin-bottom:1.2rem}
-.sidebar-brand b{font-size:1.18rem;letter-spacing:.08em}.sidebar-brand span{display:block;color:var(--muted);font-size:.74rem;margin-top:.32rem}
-.stButton>button{border-radius:2px;border:1px solid #26333b;background:#26333b;color:#fff;font-weight:700}
-.stButton>button:hover{border-color:var(--gold);color:#fff}.stSelectbox label,.stMultiSelect label{font-weight:700;color:#42515b}
-[data-baseweb="select"]>div{border-radius:2px!important;background:#fff}.stMultiSelect span[data-baseweb="tag"]{background:#edf1f2;color:#26333b}
-.report-head{display:flex;justify-content:space-between;gap:2rem;align-items:flex-start;padding:0 0 1.3rem;border-bottom:2px solid #202b32;margin-bottom:1rem}
-.report-kicker{color:var(--gold);font-size:.72rem;font-weight:800;letter-spacing:.13em}.report-head h1{font-size:2.15rem;line-height:1.08;margin:.5rem 0 .35rem;letter-spacing:.02em}
-.report-head p{color:var(--muted);margin:0;font-size:.86rem}.report-meta{text-align:right;color:var(--muted);font-size:.73rem;line-height:1.75;white-space:nowrap}.report-meta b{color:var(--ink);font-size:.9rem}
-.hero-grid{display:grid;grid-template-columns:repeat(5,1fr);background:#fff;border:1px solid var(--line);margin:1rem 0 1.3rem}
-.hero-card{padding:1rem 1.15rem;border-right:1px solid var(--line);min-height:92px}.hero-card:last-child{border-right:0}.hero-card span{font-size:.72rem;color:var(--muted)}
-.hero-card b{display:block;font-size:1.42rem;margin:.35rem 0 .2rem}.hero-card small{color:var(--muted);font-size:.68rem}.hero-card.accent{background:#f7f1df;border-top:3px solid var(--gold)}
-.section-head{display:flex;align-items:center;border-bottom:1px solid #202b32;padding:1.6rem 0 .7rem;margin-bottom:0}.section-no{font:800 .72rem monospace;color:var(--gold);width:48px}.section-head h2{font-size:1.26rem;margin:0}.section-note{margin-left:auto;color:var(--muted);font-size:.7rem}
-.sector-grid{display:grid;grid-template-columns:repeat(2,1fr);background:#fff;border-left:1px solid var(--line)}.sector-card{padding:1rem 1.1rem;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-height:130px}
-.sector-card h3{font-size:1.02rem;margin:0}.sector-card small{color:var(--gold);font-size:.67rem}.sector-values{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:.65rem 0 .45rem;padding-left:28%}
-.sector-values span{font-size:.65rem;color:var(--muted)}.sector-values b{display:block;color:var(--ink);font-size:.82rem;margin-top:.15rem}.direction-scale{position:relative;height:13px;background:#eef1f2;border-radius:8px;margin-left:28%}
-.direction-scale i{position:absolute;left:50%;top:0;height:100%;border-left:2px solid #8c969c}.scale-dot{position:absolute;top:2px;width:9px;height:9px;border-radius:50%;border:1px solid #fff;box-shadow:0 0 0 1px #58636a;transform:translateX(-50%)}
-.scale-legend{display:flex;gap:1rem;justify-content:flex-end;color:var(--muted);font-size:.61rem;margin-top:.35rem}.scale-legend span:before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:#777;margin-right:4px}
-[data-testid="stTabs"]{margin-top:.2rem}[data-baseweb="tab-list"]{gap:1.8rem;border-bottom:1px solid var(--line)}[data-baseweb="tab"]{padding:.7rem .1rem;color:#6f7c84;font-weight:700}[aria-selected="true"]{color:var(--ink)!important}
-.signal-summary{display:grid;grid-template-columns:repeat(2,1fr);background:#fff;border:1px solid var(--line)}.signal-box{padding:1rem;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
-.signal-box span{color:var(--muted);font-size:.68rem}.signal-box b{display:block;font-size:1.35rem;margin-top:.25rem}.signal-box.wide{grid-column:span 2}
-.panorama{background:#fff;border-left:1px solid var(--line);overflow-x:auto}.pano-head,.pano-row{display:grid;grid-template-columns:150px 190px 95px minmax(190px,1.4fr) 135px 135px 120px;align-items:center;min-width:1050px}
-.pano-head{background:#edf1f2;border-bottom:1px solid #25323a;min-height:42px;font-size:.68rem;font-weight:700;color:#42515b}.pano-head span,.pano-row>div{padding:.7rem .85rem}
-.pano-row{border-bottom:1px solid var(--line);min-height:86px}.pano-row:hover{background:#faf8f2}.instrument b{display:block;font-size:1rem}.instrument>span{display:block;color:var(--muted);font-size:.65rem;margin-top:.18rem}
-.instrument .stale{display:inline-block;color:#8d6330;background:#f6edd9;padding:2px 5px;margin-top:5px}.spark{display:block;width:150px;height:34px}.spark-key{color:var(--muted);font-size:.56rem}
-.gross b{font:700 .94rem monospace}.gross span,.consensus span{display:block;color:var(--muted);font-size:.62rem}.ratio-gauge{position:relative;background:#f4e9ea;height:14px;border-radius:9px;margin:0 1rem!important;padding:0!important}
-.ratio-gauge i{position:absolute;left:50%;height:14px;border-left:2px solid #7d878d}.ratio-gauge>span{position:absolute;top:2px;width:10px;height:10px;border-radius:50%;background:var(--gold);border:2px solid #fff;box-shadow:0 0 0 1px #78672f;transform:translateX(-50%)}
-.ratio-gauge b{position:absolute;right:-1px;top:-22px;font:.73rem monospace}.bar-cell b{display:block;text-align:right;font:.72rem monospace}.microbar{position:relative;height:9px;background:#eef1f2;padding:0!important;margin-bottom:4px}
-.microbar i{position:absolute;left:50%;height:100%;border-left:1px solid #9ba4a9}.microbar span{position:absolute;height:100%}.consensus b{font:.85rem monospace;color:var(--teal)}
-.change-grid{display:grid;grid-template-columns:repeat(4,1fr);background:#fff;border-left:1px solid var(--line)}.change-card{padding:1rem;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-height:165px}
-.change-card h3{font-size:.94rem;margin:0}.change-card h3 small{font:.65rem monospace;color:var(--muted)}.change-card p{font-size:.64rem;color:var(--muted);padding-bottom:.55rem;border-bottom:1px solid var(--line)}
-.change-line{display:grid;grid-template-columns:54px 1fr 54px;align-items:center;gap:.45rem;margin:.48rem 0;font-size:.62rem}.change-line b{text-align:right;font:.68rem monospace}.change-line .microbar{margin:0}
-.source-note{margin-top:1rem;padding:.75rem 1rem;border-left:3px solid var(--gold);background:#f7f1df;color:#615b4b;font-size:.68rem}
-[data-testid="stMetric"]{background:#fff;border:1px solid var(--line);padding:.8rem 1rem}[data-testid="stMetricLabel"]{color:var(--muted)}
-.stDataFrame{border:1px solid var(--line)}.muted{color:var(--muted);font-size:.65rem}
-@media(max-width:1000px){.hero-grid{grid-template-columns:repeat(2,1fr)}.sector-grid,.change-grid{grid-template-columns:1fr}.report-meta{display:none}.section-note{display:none}.block-container{padding:1.2rem}.hero-card{border-bottom:1px solid var(--line)}}
+:root{--ink:#19242c;--muted:#74818a;--line:#dfe4e6;--paper:#f4f5f4;--qk:#a78331;--inst:#315f78;--retail:#8a6670}
+html,body,[class*="css"]{font-family:Inter,"Microsoft YaHei",sans-serif;color:var(--ink)}
+.stApp,.stApp p,.stApp span,.stApp label,.stApp h1,.stApp h2,.stApp h3{color:var(--ink)}
+.stApp{background:var(--paper)}.block-container{max-width:1740px;padding:2.1rem 2.7rem 5rem}
+[data-testid="stSidebar"]{width:285px!important;background:#f8f9f8;border-right:1px solid var(--line)}
+[data-testid="stSidebar"] .block-container{padding:1.7rem 1.25rem}.sidebar-brand{border-bottom:1px solid var(--line);padding:.5rem 0 1.1rem;margin-bottom:1rem}
+.sidebar-brand b{font:700 1.18rem monospace;letter-spacing:.06em}.sidebar-brand span{display:block;color:var(--muted);font-size:.7rem;margin-top:.35rem}
+.report-head{display:grid;grid-template-columns:1fr auto;gap:2rem;border-bottom:2px solid var(--ink);padding:0 0 1.5rem;margin-bottom:1.5rem}
+.kicker{font:700 .64rem monospace;color:var(--qk);letter-spacing:.14em}.report-head h1{font-size:2.35rem;margin:.45rem 0 .5rem;letter-spacing:-.04em}.report-head p{color:var(--muted);margin:0;font-size:.82rem}
+.meta{text-align:right;font-size:.68rem;line-height:1.75;color:var(--muted)}.meta b{font:700 .9rem monospace;color:var(--ink)}
+.section-head{display:grid;grid-template-columns:42px auto 1fr;align-items:end;gap:.65rem;border-bottom:1px solid var(--ink);padding:2.2rem 0 .75rem;margin-bottom:1rem}
+.section-head>span{font:700 .66rem monospace;color:var(--qk)}.section-head h2{font-size:1.25rem;margin:0}.section-head p{text-align:right;margin:0;color:var(--muted);font-size:.65rem}
+.overview-grid{display:grid;grid-template-columns:repeat(4,1fr);background:#fff;border:1px solid var(--line)}
+.atlas-card{padding:1rem 1.15rem;border-right:1px solid var(--line);min-height:165px;border-top:3px solid var(--inst)}.atlas-card:last-child{border-right:0}
+.atlas-card.qian_kun{border-top-color:var(--qk)}.atlas-card.retail{border-top-color:var(--retail)}.atlas-card.divergence{background:#f7f1df;border-top-color:var(--qk)}
+.atlas-card header{display:flex;align-items:center;gap:.5rem;font-size:.75rem}.shape{width:9px;height:9px;background:var(--inst);border-radius:50%}.qian_kun .shape{background:var(--qk);transform:rotate(45deg);border-radius:0}.retail .shape{background:var(--retail);clip-path:polygon(50% 0,100% 100%,0 100%)}
+.atlas-card .big{font:700 1.55rem monospace;margin:1rem 0 .05rem}.atlas-card>small{color:var(--muted);font-size:.62rem}.atlas-card .delta{font:700 .82rem monospace;margin:.7rem 0}.atlas-card .delta em{font:400 .6rem sans-serif;color:var(--muted)}
+.atlas-card footer{display:grid;grid-template-columns:repeat(4,1fr);gap:.3rem;border-top:1px solid var(--line);padding-top:.55rem}.atlas-card footer span{font-size:.58rem;color:var(--muted)}.atlas-card footer b{display:block;font:700 .67rem monospace;color:var(--ink)}
+.sector-matrix{border:1px solid var(--line);background:#fff}.sector-row{display:grid;grid-template-columns:155px repeat(3,1fr);border-bottom:1px solid var(--line);min-height:94px}.sector-row:last-child{border:0}.sector-row h3{font-size:.88rem;margin:0;padding:1.1rem;border-right:1px solid var(--line)}
+.sector-signal{padding:.75rem 1rem;border-right:1px solid var(--line)}.sector-signal:last-child{border:0}.sector-signal strong{font-size:.62rem}.sector-signal>span.signal{float:right}.sector-signal small{display:block;font:600 .59rem monospace;color:var(--muted);margin-top:.25rem}
+.signal{font-size:.53rem;padding:.16rem .38rem;border-radius:2px;background:#eef1f2;color:#58656e}.signal.strong_long,.signal.long{background:#e1efeb;color:#20685f}.signal.strong_short,.signal.short{background:#f4e5e6;color:#974d56}
+.hbar{height:6px;background:#edf0f1;position:relative;margin:.65rem 0}.hbar i{position:absolute;left:50%;height:100%;border-left:1px solid #929da3}.hbar b{position:absolute;height:100%}
+.instrument-table{background:#fff;border:1px solid var(--line)}.instrument-head,.instrument-row{display:grid;grid-template-columns:145px repeat(3,1fr) 165px}.instrument-head{background:#edf0f1;border-bottom:1px solid var(--line)}.instrument-head span{padding:.55rem .8rem;font-size:.58rem;color:var(--muted)}
+.instrument-row{border-bottom:1px solid var(--line);min-height:88px}.instrument-row:last-child{border:0}.instrument-id,.tri-cell,.div-score{padding:.75rem .8rem;border-right:1px solid var(--line)}.instrument-id b{display:block;font-size:.78rem}.instrument-id span,.instrument-id small{display:block;color:var(--muted);font-size:.55rem;margin-top:.15rem}
+.tri-cell{display:grid;grid-template-columns:1fr auto;gap:.2rem}.tri-cell strong{font-size:.55rem;color:var(--muted)}.tri-cell b{font:700 .78rem monospace}.tri-cell span,.tri-cell em{font:500 .58rem monospace;color:var(--muted)}.tri-cell small{grid-column:1/3;width:max-content}.div-score{border:0}.div-score b{font:700 1rem monospace}.div-score span{display:block;font-size:.58rem;color:var(--muted);margin-top:.35rem}
+.change-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}.change-panel{background:#fff;padding:1rem;border-top:3px solid var(--inst)}.change-panel.qian_kun{border-top-color:var(--qk)}.change-panel.retail{border-top-color:var(--retail)}.change-panel h3{font-size:.82rem;margin:0 0 .8rem}
+.change-rank{border-top:1px solid var(--line);padding:.65rem 0 .25rem}.change-rank h4{font-size:.58rem;color:var(--muted);font-weight:600;margin:0 0 .35rem}.change-rank>small{font-size:.6rem;color:var(--muted)}
+.change-item{display:grid;grid-template-columns:minmax(76px,28%) minmax(0,1fr) 65px;gap:.5rem;align-items:center;margin:.6rem 0}.change-item b{font-size:.78rem;line-height:1.4;overflow-wrap:break-word}.change-item span{text-align:right;font:.62rem monospace}
+.monitor-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}.monitor-card{background:#fff;padding:1rem;min-height:85px}.monitor-card span,.monitor-card small{display:block;color:var(--muted);font-size:.6rem}.monitor-card b{display:block;font:.82rem monospace;margin:.65rem 0}
+.executive-box{background:#f7f1df;border-left:4px solid var(--qk);padding:1rem 1.25rem}.executive-box p{font-size:.72rem;line-height:1.65;margin:.4rem 0}.caveat{font-size:.63rem;color:var(--muted);border-top:1px solid var(--line);padding-top:.75rem;margin-top:1rem}
+[data-testid="stMetric"]{background:#fff;border:1px solid var(--line);padding:.7rem}.stDataFrame{border:1px solid var(--line)}
+[data-testid="stToolbar"]{display:flex!important}
+[data-testid="stAppDeployButton"],[data-testid="stMainMenu"],[data-testid="stDecoration"],[data-testid="stStatusWidget"]{display:none!important}
+@media(max-width:1100px){.overview-grid{grid-template-columns:repeat(2,1fr)}.sector-row{grid-template-columns:110px repeat(3,1fr)}.instrument-head,.instrument-row{grid-template-columns:110px repeat(3,1fr) 130px}.block-container{padding:1.3rem}.report-head{grid-template-columns:1fr}.meta{display:none}}
 </style>
 """, unsafe_allow_html=True)
+
+
+def radial_text_positions(x_values, y_values) -> list[str]:
+    """Place labels around their points, pointing away from the chart centre."""
+    x = np.asarray(x_values, dtype=float)
+    y = np.asarray(y_values, dtype=float)
+    if not len(x):
+        return []
+    x_scale = max(float(np.nanmax(x) - np.nanmin(x)), 1.0)
+    y_scale = max(float(np.nanmax(y) - np.nanmin(y)), 1.0)
+    x_norm = (x - float(np.nanmedian(x))) / x_scale
+    y_norm = (y - float(np.nanmedian(y))) / y_scale
+    directions = (
+        "middle right", "top right", "top center", "top left",
+        "middle left", "bottom left", "bottom center", "bottom right",
+    )
+    positions: list[str] = []
+    for index, (x_point, y_point) in enumerate(zip(x_norm, y_norm)):
+        # Use eight directions around the marker. A deterministic nudge prevents
+        # coincident/near-centre points from all choosing the same side.
+        if abs(x_point) + abs(y_point) < 0.08:
+            sector = index % len(directions)
+        else:
+            angle = np.arctan2(y_point, x_point)
+            sector = int(np.floor((angle + np.pi / 8) / (np.pi / 4))) % 8
+        positions.append(directions[sector])
+    return positions
 
 if is_empty(DB_PATH):
     seed(DB_PATH)
@@ -84,23 +114,47 @@ if is_empty(DB_PATH):
 
 @st.cache_data(ttl=60)
 def load_data():
-    return (
-        query("""SELECT m.*, c.source FROM daily_metrics m JOIN contracts c
-                 USING (trade_date, exchange, symbol, contract) ORDER BY m.trade_date""", path=DB_PATH),
-        query("SELECT * FROM broker_positions ORDER BY trade_date", path=DB_PATH),
-        query("SELECT * FROM contracts ORDER BY trade_date", path=DB_PATH),
-        query("SELECT * FROM update_log ORDER BY attempted_at DESC", path=DB_PATH),
-        query("SELECT * FROM position_history ORDER BY trade_date", path=DB_PATH),
+    metrics = query("""
+        WITH ps AS (SELECT trade_date, exchange, symbol, contract, max(source) AS source
+        FROM broker_positions GROUP BY trade_date, exchange, symbol, contract)
+        SELECT m.*, ps.source, c.source price_source FROM daily_metrics m
+        JOIN contracts c USING (trade_date, exchange, symbol, contract)
+        JOIN ps USING (trade_date, exchange, symbol, contract) ORDER BY m.trade_date
+    """, path=DB_PATH)
+    return (metrics, query("SELECT * FROM broker_positions ORDER BY trade_date", path=DB_PATH),
+            query("SELECT * FROM contracts ORDER BY trade_date", path=DB_PATH),
+            query("SELECT * FROM update_log ORDER BY attempted_at DESC", path=DB_PATH),
+            query("SELECT * FROM position_history ORDER BY trade_date", path=DB_PATH))
+
+
+def source_refresh_is_current(target) -> bool:
+    """Return whether every exchange completed its daily catalogue refresh."""
+    completed = query(
+        """SELECT DISTINCT exchange FROM update_log
+        WHERE trade_date=? AND status IN ('success', 'partial')
+        AND message LIKE '%全品种目录%'""",
+        [target],
+        DB_PATH,
     )
+    return set(completed["exchange"]) >= set(EXCHANGES)
 
 
-def light_layout(fig: go.Figure, height: int, **kwargs) -> go.Figure:
-    fig.update_layout(height=height, paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
-                      font={"color": INK, "size": 12}, margin={"l": 50, "r": 35, "t": 45, "b": 45},
-                      hoverlabel={"bgcolor": "#ffffff", "font_color": INK}, **kwargs)
-    fig.update_xaxes(gridcolor=GRID, zerolinecolor="#8b959b")
-    fig.update_yaxes(gridcolor=GRID, zerolinecolor="#8b959b")
-    return fig
+# A browser reload creates a new Streamlit session. Always invalidate the local
+# read cache, then contact sources only when the latest publishable partition is
+# not already complete. Navigation/widget reruns must not trigger API storms.
+if not st.session_state.get("startup_refresh_done"):
+    st.session_state["startup_refresh_done"] = True
+    load_data.clear()
+    startup_target = latest_weekday()
+    if not source_refresh_is_current(startup_target):
+        try:
+            with st.spinner("正在检查并获取最新交易日数据…"):
+                st.session_state["last_update_result"] = update(
+                    startup_target, force=False, backfill_history=False
+                )
+        except Exception as exc:  # noqa: BLE001 - keep the last valid local snapshot visible.
+            st.session_state["startup_refresh_error"] = str(exc)
+    load_data.clear()
 
 
 metrics, positions, contracts, logs, position_history = load_data()
@@ -108,268 +162,445 @@ for frame in (metrics, positions, contracts, position_history):
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
 
 with st.sidebar:
-    language_choice = st.radio("Language / 语言", ["中文", "English"], horizontal=True)
+    language_label = "Language" if st.session_state.get("language_choice") == "English" else "语言"
+    language_choice = st.radio(
+        language_label, ["中文", "English"], horizontal=True, key="language_choice"
+    )
     lang = "en" if language_choice == "English" else "zh"
-    st.markdown(
-        f'<div class="sidebar-brand"><b>◇ SeatAlpha</b><span>{tr(lang, "sidebar_subtitle")}</span></div>',
-        unsafe_allow_html=True,
-    )
-    if st.button(tr(lang, "update"), width="stretch", type="primary"):
-        with st.spinner(tr(lang, "updating")):
-            st.session_state["last_update_result"] = update(force=False)
-        load_data.clear()
-        st.rerun()
-    real_dates = sorted(metrics.loc[metrics["source"].ne("demo"), "trade_date"].dt.date.unique(), reverse=True)
-    selected_date = st.selectbox(tr(lang, "date"), real_dates, index=0) if real_dates else None
+    st.markdown(f'<div class="sidebar-brand"><b>◇ SEATALPHA</b><span>{cp(lang,"tagline")}</span></div>', unsafe_allow_html=True)
+    if st.button(f"↻ {cp(lang, 'update')}", width="stretch", type="primary"):
+        with st.spinner(cp(lang, "updating")):
+            load_data.clear()
+            st.session_state["last_update_result"] = update(
+                force=True, backfill_history=False, missing_only=True
+            )
+        load_data.clear(); st.rerun()
+    if st.session_state.get("startup_refresh_error"):
+        st.warning(
+            "最新接口暂时不可用，当前显示上一次成功数据。"
+            if lang == "zh" else
+            "The latest source request is unavailable; showing the last successful snapshot."
+        )
+    # Before the evening publication cut-off, today's rankings are not complete.
+    # Offer the latest publishable trade date instead of a misleading calendar date.
+    latest_published_date = latest_weekday()
+    real_dates = sorted(set(metrics.loc[metrics["source"].ne("demo"), "trade_date"].dt.date)
+                        | set(position_history.loc[position_history["source"].ne("demo"), "trade_date"].dt.date)
+                        | {latest_published_date}, reverse=True)
+    selected_date = st.selectbox(cp(lang, "date"), real_dates)
+    all_symbols = st.toggle("全部品种" if lang == "zh" else "All instruments", value=True)
     sectors = sorted({meta[1] for meta in SYMBOL_META.values()})
-    selected_sectors = st.multiselect(
-        tr(lang, "sectors"), sectors, default=sectors, format_func=lambda value: sector_name(value, lang)
-    )
-    st.caption(tr(lang, "scope_caption"))
-    for exchange, message in st.session_state.get("last_update_result", {}).items():
-        st.caption(f"{exchange} · {update_message(message, lang)}")
-
-if selected_date is None:
-    st.error(tr(lang, "no_real_data"))
-    st.stop()
-
-snapshot = build_snapshot(metrics, positions, position_history, selected_date, selected_sectors)
-if snapshot.empty:
-    st.warning(tr(lang, "no_filter_data"))
-    st.stop()
-
-st.markdown(f"""
-<div class="report-head">
-  <div><span class="report-kicker">INSTITUTIONAL POSITIONING · FUTURES ATLAS</span>
-  <h1>{tr(lang, 'report_title')}</h1><p>{tr(lang, 'report_subtitle')}</p></div>
-  <div class="report-meta"><b>{selected_date:%Y.%m.%d}</b><br>{tr(lang, 'instrument_basis')}<br>{tr(lang, 'data_source')}</div>
-</div>
-""", unsafe_allow_html=True)
-
-strongest = snapshot.nlargest(1, "bull_score").iloc[0]
-largest_change = snapshot.loc[snapshot["delta_net_1d"].abs().idxmax()]
-stale_count = int(snapshot["stale_days"].gt(0).sum())
-total_net = float(snapshot["net_position"].sum())
-strongest_name = instrument_name(strongest["symbol"], lang, strongest["name"])
-strongest_signal = signal_name(strongest["signal"], lang)
-st.markdown(f"""
-<div class="hero-grid">
-  <div class="hero-card"><span>{tr(lang, 'covered')}</span><b>{len(snapshot)} {tr(lang, 'instruments')}</b><small>{snapshot['sector'].nunique()} {tr(lang, 'sector_count')}</small></div>
-  <div class="hero-card"><span>{tr(lang, 'total_net')}</span><b>{total_net / 10000:+,.1f} {tr(lang, 'ten_thousand_lots')}</b><small>{tr(lang, 'total_note')}</small></div>
-  <div class="hero-card"><span>{tr(lang, 'strongest')}</span><b>{strongest['symbol']}</b><small>{strongest_name} · {strongest_signal}</small></div>
-  <div class="hero-card"><span>{tr(lang, 'largest_change')}</span><b>{largest_change['symbol']}</b><small>{largest_change['delta_net_1d'] / 10000:+,.1f} {tr(lang, 'ten_thousand_lots')}</small></div>
-  <div class="hero-card accent"><span>{tr(lang, 'freshness')}</span><b>{len(snapshot)-stale_count} / {len(snapshot)}</b><small>{tr(lang, 'current_count')} · {stale_count} {tr(lang, 'stale_count')}</small></div>
-</div>
-""", unsafe_allow_html=True)
-
-overview_tab, detail_tab, broker_tab, status_tab = st.tabs(
-    [tr(lang, "tab_overview"), tr(lang, "tab_detail"), tr(lang, "tab_broker"), tr(lang, "tab_status")]
-)
-
-with overview_tab:
-    st.markdown(
-        section_title("01", tr(lang, "section_sector"), tr(lang, "section_sector_note")),
-        unsafe_allow_html=True,
-    )
-    st.markdown(sector_cards(snapshot, lang), unsafe_allow_html=True)
-
-    st.markdown(
-        section_title("02", tr(lang, "section_map"), tr(lang, "section_map_note")),
-        unsafe_allow_html=True,
-    )
-    left, right = st.columns([4.5, 1.25], gap="medium")
-    with left:
-        chart = snapshot.copy()
-        x_label, y_label = tr(lang, "net_strength"), tr(lang, "consistency")
-        chart[x_label] = chart["net_position_ratio"] * 100
-        chart[y_label] = chart["consensus"] * 100
-        chart["display_name"] = [instrument_name(s, lang, n) for s, n in zip(chart["symbol"], chart["name"])]
-        chart["sector_label"] = chart["sector"].map(lambda value: sector_name(value, lang))
-        chart["signal_label"] = chart["signal"].map(lambda value: signal_name(value, lang))
-        signal_colors = {
-            signal_name("共同净多", lang): TEAL,
-            signal_name("共同净空", lang): ROSE,
-            signal_name("机构分歧", lang): BLUE,
-        }
-        fig = px.scatter(
-            chart, x=x_label, y=y_label, size="gross_position", color="signal_label", text="symbol",
-            hover_name="display_name", hover_data={"sector_label": True, "gross_position": ":,.0f", "asof_date": True,
-                                                     x_label: ":+.1f", y_label: ":+.1f", "signal_label": False},
-            color_discrete_map=signal_colors, size_max=52,
+    if all_symbols:
+        selected_sectors = sectors
+        selected_symbols = list(SYMBOL_META)
+        st.caption(
+            f"已包含全部 {len(sectors)} 个板块、{len(selected_symbols)} 个期货品种。"
+            if lang == "zh" else
+            f"All {len(sectors)} sectors and {len(selected_symbols)} futures products are included."
         )
-        x_max = max(float(chart[x_label].abs().max()) * 1.25, 5)
-        y_max = max(float(chart[y_label].abs().max()) * 1.25, 15)
-        for x0, x1, y0, y1, color in ((0, x_max, 0, y_max, TEAL), (-x_max, 0, -y_max, 0, ROSE),
-                                      (-x_max, 0, 0, y_max, GOLD), (0, x_max, -y_max, 0, BLUE)):
-            fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1, fillcolor=color, opacity=.055, line_width=0, layer="below")
-        fig.add_hline(y=0, line_dash="dot", line_color="#7b858b")
-        fig.add_vline(x=0, line_dash="dot", line_color="#7b858b")
-        fig.update_traces(textposition="middle right", marker={"line": {"color": "#ffffff", "width": 1.5}})
-        light_layout(fig, 520, legend={"orientation": "h", "y": 1.08, "title": None},
-                     xaxis_title=tr(lang, "net_strength_axis"), yaxis_title=tr(lang, "consistency_axis"))
-        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-    with right:
-        signal_counts = snapshot["signal"].value_counts()
-        st.markdown(f"""<div class="signal-summary">
-        <div class="signal-box"><span>{signal_name('共同净多', lang)}</span><b>{signal_counts.get('共同净多', 0)} {tr(lang, 'instruments')}</b></div>
-        <div class="signal-box"><span>{signal_name('共同净空', lang)}</span><b>{signal_counts.get('共同净空', 0)} {tr(lang, 'instruments')}</b></div>
-        <div class="signal-box wide"><span>{signal_name('机构分歧', lang)}</span><b>{signal_counts.get('机构分歧', 0)} {tr(lang, 'instruments')}</b></div>
-        <div class="signal-box wide"><span>{tr(lang, 'max_gross')}</span><b>{snapshot.loc[snapshot['gross_position'].idxmax(),'symbol']} {snapshot['gross_position'].max()/10000:,.1f} {tr(lang, 'ten_thousand_lots')}</b></div>
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown(
-        section_title("03", tr(lang, "section_panorama"), tr(lang, "section_panorama_note")),
-        unsafe_allow_html=True,
-    )
-    st.markdown(panorama_table(snapshot, position_history, contracts, lang), unsafe_allow_html=True)
-
-    st.markdown(
-        section_title("04", tr(lang, "section_changes"), tr(lang, "section_changes_note")),
-        unsafe_allow_html=True,
-    )
-    st.markdown(key_change_cards(snapshot, lang=lang), unsafe_allow_html=True)
-    stale_separator = ", " if lang == "en" else "、"
-    stale_names = stale_separator.join(
-        f"{r.symbol}({r.asof_date:%m-%d})" for r in snapshot[snapshot["stale_days"].gt(0)].itertuples()
-    )
-    note = tr(lang, "dce_note") if stale_names else tr(lang, "fresh_note")
-    separator = "; " if lang == "en" else "。"
-    st.markdown(
-        f'<div class="source-note">{tr(lang, "data_note")}: {note} {tr(lang, "stale_instruments")}: '
-        f'{stale_names or tr(lang, "none")}{separator}{tr(lang, "no_demo_mix")}</div>',
-        unsafe_allow_html=True,
-    )
-
-with detail_tab:
-    symbol = st.selectbox(
-        tr(lang, "select_instrument"), snapshot["symbol"].tolist(),
-        format_func=lambda s: f"{s} · {instrument_name(s, lang, SYMBOL_META.get(s, (s,))[0])}",
-    )
-    row = snapshot[snapshot["symbol"].eq(symbol)].iloc[0]
-    ph = position_history[(position_history["symbol"].eq(symbol)) & (position_history["trade_date"].dt.date.le(selected_date))].copy()
-    ph["priority"] = ph["source"].eq("official-aggregate-via-akshare").astype(int)
-    ph = ph.sort_values(["trade_date", "priority"]).drop_duplicates("trade_date", keep="last")
-    px_history = contracts[(contracts["symbol"].eq(symbol)) & contracts["source"].ne("demo") & contracts["close"].gt(0)].copy()
-    px_history = px_history.sort_values(["trade_date", "open_interest"]).drop_duplicates("trade_date", keep="last")
-    a, b, c, d = st.columns(4)
-    a.metric(tr(lang, "current_strength"), f"{row['net_position_ratio']:+.1%}")
-    b.metric(tr(lang, "top20_net"), f"{row['net_position']:+,.0f} {tr(lang, 'lots')}")
-    c.metric(tr(lang, "consistency"), f"{row['consensus']:+.0%}")
-    d.metric(tr(lang, "position_date"), f"{row['asof_date']:%Y-%m-%d}")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=px_history["trade_date"], y=px_history["close"], name=tr(lang, "main_close"),
-        line={"color": GOLD, "width": 2},
-    ))
-    mode = "lines+markers" if len(ph) >= 2 else "markers"
-    fig.add_trace(go.Scatter(x=ph["trade_date"], y=ph["net_position_ratio"], name=tr(lang, "top20_strength"), mode=mode,
-                             yaxis="y2", line={"color": BLUE, "width": 2}, marker={"size": 8}))
-    light_layout(fig, 410, legend={"orientation": "h", "y": 1.1}, yaxis={"title": tr(lang, "close")},
-                 yaxis2={"title": tr(lang, "net_strength"), "overlaying": "y", "side": "right", "tickformat": ".1%", "showgrid": False})
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-    if len(ph) < 2:
-        st.info(tr(lang, "one_point"))
-    pos = positions[(positions["symbol"].eq(symbol)) & positions["source"].ne("demo") &
-                    (positions["trade_date"].dt.date.le(selected_date))].copy()
-    if not pos.empty:
-        pos = pos[pos["trade_date"].eq(pos["trade_date"].max())]
-        pos["net_position"] = pos["long_position"] - pos["short_position"]
-        pos["behavior"] = [classify_behavior(a, b) for a, b in zip(pos["long_change"], pos["short_change"])]
-        pos["behavior"] = pos["behavior"].map(lambda value: behavior_name(value, lang))
-        x, y, z = st.columns(3)
-        detail_columns = {
-            "broker": "Broker" if lang == "en" else "席位",
-            "net_position": tr(lang, "net_position"),
-            "long_change": "Long Change" if lang == "en" else "多头增减",
-            "short_change": "Short Change" if lang == "en" else "空头增减",
-            "behavior": "Behavior" if lang == "en" else "行为",
-        }
-        with x:
-            st.markdown(f"#### {tr(lang, 'net_long_top')}")
-            st.dataframe(
-                pos.nlargest(8, "net_position")[["broker", "net_position", "long_change"]].rename(columns=detail_columns),
-                hide_index=True, width="stretch",
-            )
-        with y:
-            st.markdown(f"#### {tr(lang, 'net_short_top')}")
-            st.dataframe(
-                pos.nsmallest(8, "net_position")[["broker", "net_position", "short_change"]].rename(columns=detail_columns),
-                hide_index=True, width="stretch",
-            )
-        pos["activity"] = pos["long_change"].abs() + pos["short_change"].abs()
-        with z:
-            st.markdown(f"#### {tr(lang, 'today_behavior')}")
-            st.dataframe(
-                pos.nlargest(8, "activity")[["broker", "behavior", "long_change", "short_change"]].rename(columns=detail_columns),
-                hide_index=True, width="stretch",
-            )
-
-with broker_tab:
-    real_positions = positions[(positions["source"].ne("demo")) & (positions["trade_date"].dt.date.le(selected_date))].copy()
-    real_positions["latest"] = real_positions.groupby("symbol")["trade_date"].transform("max")
-    real_positions = real_positions[real_positions["trade_date"].eq(real_positions["latest"])]
-    broker = st.selectbox(tr(lang, "select_broker"), sorted(real_positions["broker"].unique()))
-    bp = real_positions[real_positions["broker"].eq(broker)].groupby("symbol", as_index=False).agg(
-        long_position=("long_position", "sum"), short_position=("short_position", "sum"),
-        long_change=("long_change", "sum"), short_change=("short_change", "sum"))
-    bp["net_position"] = bp["long_position"] - bp["short_position"]
-    bp["net_change"] = bp["long_change"] - bp["short_change"]
-    fig = px.bar(bp.sort_values("net_position"), x="net_position", y="symbol", orientation="h",
-                 color_discrete_sequence=[BLUE], text_auto=",.0f",
-                 labels={"net_position": tr(lang, "net_position"), "symbol": tr(lang, "instrument")})
-    light_layout(fig, max(380, len(bp) * 38), showlegend=False)
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-    broker_columns = {
-        "symbol": tr(lang, "instrument"),
-        "long_position": "Long Position" if lang == "en" else "多头持仓",
-        "short_position": "Short Position" if lang == "en" else "空头持仓",
-        "long_change": "Long Change" if lang == "en" else "多头增减",
-        "short_change": "Short Change" if lang == "en" else "空头增减",
-        "net_position": tr(lang, "net_position"),
-        "net_change": "Net Change" if lang == "en" else "净变化",
-    }
-    st.dataframe(bp.sort_values("net_position", ascending=False).rename(columns=broker_columns), hide_index=True, width="stretch")
-
-with status_tab:
-    st.markdown(
-        section_title("DATA", tr(lang, "status_title"), tr(lang, "status_note")),
-        unsafe_allow_html=True,
-    )
-    if logs.empty:
-        st.info(tr(lang, "no_logs"))
     else:
-        display_logs = logs.copy()
-        if lang == "en":
-            display_logs["status"] = display_logs["status"].map(
-                {"success": "Success", "failed": "Failed", "stale": "Stale"}
-            ).fillna(display_logs["status"])
-            display_logs["message"] = display_logs["message"].map(lambda value: log_message(value, lang))
-        log_columns = {
-            "attempted_at": "Attempted At" if lang == "en" else "尝试时间",
-            "trade_date": "Trade Date" if lang == "en" else "交易日",
-            "exchange": "Exchange" if lang == "en" else "交易所",
-            "status": "Status" if lang == "en" else "状态",
-            "rows_written": "Rows Written" if lang == "en" else "写入行数",
-            "message": "Message" if lang == "en" else "消息",
-            "source": "Source" if lang == "en" else "来源",
-        }
-        display_logs = display_logs.rename(columns=log_columns)
-        exchange_column = log_columns["exchange"]
-        attempted_column = log_columns["attempted_at"]
-        st.dataframe(
-            display_logs.sort_values(attempted_column, ascending=False).drop_duplicates(exchange_column),
-            hide_index=True, width="stretch",
+        selected_sectors = st.multiselect(
+            cp(lang, "sectors"), sectors, default=sectors,
+            format_func=lambda value: sector_name(value, lang),
         )
-        with st.expander(tr(lang, "full_logs")):
+        available_symbols = [
+            symbol for symbol, meta in SYMBOL_META.items() if meta[1] in selected_sectors
+        ]
+        selected_symbols = st.multiselect(
+            cp(lang, "symbols"), available_symbols, default=available_symbols,
+            format_func=lambda symbol: instrument_name(symbol, lang, SYMBOL_META[symbol][0]),
+        )
+    selected_categories = st.multiselect(cp(lang, "categories"), CATEGORY_ORDER, default=list(CATEGORY_ORDER),
+                                         format_func=lambda c: CATEGORY_LABELS[lang][c])
+    selected_categories = [category for category in CATEGORY_ORDER if category in selected_categories]
+    divergence_only = st.toggle(cp(lang, "divergence_only"))
+    consensus_only = st.toggle(cp(lang, "consensus_only"))
+    major_only = st.toggle(cp(lang, "major_only"))
+
+def render_broker_page():
+    st.header(cp(lang, "broker"))
+    profile_source, broker_options = build_broker_profiles(positions, selected_date)
+    if broker_options:
+        broker = st.selectbox(cp(lang, "broker"), broker_options)
+        category = classify_broker(broker)
+        st.caption(
+            f"席位类别：{CATEGORY_LABELS[lang].get(category, category)}；数据为交易所公布的客户持仓排名。"
+            if lang == "zh" else
+            f"Seat category: {CATEGORY_LABELS[lang].get(category, category)}; based on published client-position rankings."
+        )
+        profile = broker_profile_rows(profile_source, broker)
+        profile["品种" if lang == "zh" else "Instrument"] = profile["symbol"].map(
+            lambda symbol: instrument_name(symbol, lang)
+        )
+        chart_column = "净持仓" if lang == "zh" else "Net position"
+        chart = profile.set_index("品种" if lang == "zh" else "Instrument")[["net_position"]].rename(
+            columns={"net_position": chart_column}
+        )
+        st.bar_chart(chart, horizontal=True)
+        visible = profile.drop(columns="symbol").rename(columns={
+            "long_position": "多头持仓" if lang == "zh" else "Long position",
+            "short_position": "空头持仓" if lang == "zh" else "Short position",
+            "long_change": "多头增减" if lang == "zh" else "Long change",
+            "short_change": "空头增减" if lang == "zh" else "Short change",
+            "net_position": "净持仓" if lang == "zh" else "Net position",
+            "net_change": "净变化" if lang == "zh" else "Net change",
+        })
+        st.dataframe(visible, hide_index=True, width="stretch")
+    else: st.info(cp(lang, "no_category"))
+
+
+def render_status_page():
+    st.header(cp(lang, "status"))
+    expected_date = latest_weekday(selected_date)
+    coverage = build_current_coverage(contracts, positions, selected_date, expected_date)
+    fresh = int(coverage["status"].eq("最新").sum())
+    delayed = int(coverage["status"].str.contains("延迟").sum())
+    missing = len(coverage) - fresh - delayed
+    summary = st.columns(4)
+    summary[0].metric("全部期货品种" if lang == "zh" else "Futures instruments", len(coverage))
+    summary[1].metric("数据基准日" if lang == "zh" else "Expected date", expected_date.isoformat())
+    summary[2].metric("已更新" if lang == "zh" else "Current", fresh)
+    summary[3].metric("延迟 / 暂无" if lang == "zh" else "Delayed / unavailable", f"{delayed} / {missing}")
+    if lang == "zh":
+        st.info("状态只采用每个品种最新的一条有效记录。8 月 21 日的新浪数据是历史备用记录，若同品种已有更新的 iFinD 数据，不再计为当前延迟。")
+    current = coverage.copy()
+    current["name"] = current["symbol"].map(lambda symbol: instrument_name(symbol, lang))
+    current["sector"] = current["sector"].map(lambda value: sector_name(value, lang))
+    if lang == "zh":
+        current["exchange"] = current["exchange"].map(EXCHANGE_NAMES_ZH).fillna(current["exchange"])
+    else:
+        current["status"] = current["status"].replace({
+            "暂无数据": "No data", "暂无席位排名": "No member ranking",
+            "无活跃主力合约": "No active main contract", "暂无行情": "No quote", "最新": "Current",
+        }).str.replace("席位延迟", "Position delayed by", regex=False).str.replace("行情延迟", "Quote delayed by", regex=False).str.replace("个交易日", "trading days", regex=False)
+        current["reason"] = current["reason"].replace({
+            "目录存在，但当日未返回行情与席位记录": "Listed in the catalog, but no quote or member ranking was returned",
+            "当日有活跃行情，但 iFinD/交易所未返回会员排名": "Active quote exists, but iFinD/exchange returned no member ranking",
+            "当日持仓量为零，无法选取主力合约": "Open interest is zero; no main contract can be selected",
+            "席位存在，但当日行情不可用": "Member ranking exists, but the daily quote is unavailable",
+            "行情与席位均达到数据基准日": "Quote and ranking match the expected date",
+            "存在交易日延迟": "Trading-day lag exists",
+        })
+    current["price_source"] = current["price_source"].map(lambda value: source_name(value, lang))
+    current["position_source"] = current["position_source"].map(lambda value: source_name(value, lang))
+    visible_columns = ["name", "exchange", "sector", "price_date", "price_source",
+                       "position_date", "position_source", "status", "reason"]
+    current = current[visible_columns].rename(columns={
+        "name": "品种" if lang == "zh" else "Instrument",
+        "exchange": "交易所" if lang == "zh" else "Exchange",
+        "sector": "板块" if lang == "zh" else "Sector",
+        "price_date": "行情日期" if lang == "zh" else "Price date",
+        "price_source": "行情来源" if lang == "zh" else "Price source",
+        "position_date": "席位日期" if lang == "zh" else "Position date",
+        "position_source": "席位来源" if lang == "zh" else "Position source",
+        "status": "当前状态" if lang == "zh" else "Current status",
+        "reason": "原因" if lang == "zh" else "Reason",
+    })
+    st.dataframe(current, hide_index=True, width="stretch", height=560)
+
+    st.subheader("席位分类说明" if lang == "zh" else "Seat classification")
+    if lang == "zh":
+        st.warning("“散户”不是交易所直接发布的个人账户数据，而是零售客户占比较高的期货公司客户席位代理分类；“机构”同样是研究分类，不代表期货公司的自营观点。原始数据来自 iFinD/交易所会员持仓排名。")
+    latest_real = positions[
+        positions["source"].ne("demo") & positions["trade_date"].dt.date.le(selected_date)
+    ].copy()
+    if not latest_real.empty:
+        latest_real["latest"] = latest_real.groupby("symbol")["trade_date"].transform("max")
+        classified = enrich_broker_classification(latest_real[latest_real["trade_date"].eq(latest_real["latest"])])
+    else:
+        classified = latest_real
+    for category in CATEGORY_ORDER:
+        configured = sorted(SEAT_CLASSIFICATION[category])
+        observed = sorted(classified.loc[classified["broker_category"].eq(category), "broker_name_normalized"].unique()) if not classified.empty else []
+        with st.expander(f"{CATEGORY_LABELS[lang][category]} · {'当前出现' if lang == 'zh' else 'currently observed'} {len(observed)}"):
+            if lang == "zh":
+                st.write("当前数据中出现：" + ("、".join(observed) if observed else "无"))
+                st.caption("分类名单：" + "、".join(configured))
+            else:
+                st.write("Currently observed: " + (", ".join(observed) if observed else "None"))
+                st.caption("Configured list: " + ", ".join(configured))
+
+    with st.expander("历史来源覆盖（审计记录）" if lang == "zh" else "Historical source coverage (audit)"):
+        st.caption(
+            "这里保留旧数据源的历史记录；“最晚日期”不代表当前页面正在使用的数据日期。请以上方当前覆盖状态为准。"
+            if lang == "zh" else
+            "This table retains historical providers for audit. Its last date is not the active dashboard date; use the current coverage table above."
+        )
+        history = historical_source_coverage(positions)
+        history["source"] = history["source"].map(lambda value: source_name(value, lang))
+        if lang == "zh":
+            history["exchange"] = history["exchange"].map(EXCHANGE_NAMES_ZH).fillna(history["exchange"])
+            history = history.rename(columns={"exchange": "交易所", "source": "历史来源",
+                "first_date": "最早日期", "last_date": "最晚日期", "rows": "记录数", "products": "品种数"})
+        st.dataframe(history, hide_index=True, width="stretch")
+    with st.expander("完整更新日志" if lang == "zh" else "Full update log"):
+        if not logs.empty:
+            display_logs = logs.copy()
+            display_logs["source"] = display_logs["source"].map(lambda value: source_name(value, lang))
+            display_logs["message"] = display_logs["message"].map(lambda value: log_message(value, lang))
+            if lang == "zh":
+                display_logs["exchange"] = display_logs["exchange"].map(EXCHANGE_NAMES_ZH).fillna(display_logs["exchange"])
+                display_logs = display_logs.rename(columns={"attempted_at": "更新时间", "trade_date": "数据基准日",
+                    "exchange": "交易所", "status": "结果", "rows_written": "写入行数",
+                    "message": "说明", "source": "来源"})
             st.dataframe(display_logs, hide_index=True, width="stretch")
-    coverage = position_history.groupby(["exchange", "source"]).agg(
-        first_date=("trade_date", "min"), last_date=("trade_date", "max"), symbols=("symbol", "nunique"), rows=("symbol", "size")).reset_index()
-    coverage_columns = {
-        "exchange": "Exchange" if lang == "en" else "交易所",
-        "source": "Source" if lang == "en" else "来源",
-        "first_date": "First Date" if lang == "en" else "最早日期",
-        "last_date": "Last Date" if lang == "en" else "最新日期",
-        "symbols": "Instruments" if lang == "en" else "品种数",
-        "rows": "Rows" if lang == "en" else "行数",
-    }
-    st.dataframe(coverage.rename(columns=coverage_columns), hide_index=True, width="stretch")
+
+
+def render_price_chart(price: pd.DataFrame, lang: str) -> None:
+    """Render a localized price chart without Streamlit's English Vega toolbar."""
+    label = "收盘价" if lang == "zh" else "Close"
+    date_label = "日期" if lang == "zh" else "Date"
+    figure = go.Figure(go.Scatter(
+        x=price["trade_date"], y=price["close"], mode="lines+markers",
+        name=label, line={"color": "#a78331", "width": 2},
+        marker={"size": 4},
+        hovertemplate=(
+            "日期 %{x|%Y-%m-%d}<br>收盘价 %{y:,.2f}<extra></extra>"
+            if lang == "zh" else
+            "Date %{x|%Y-%m-%d}<br>Close %{y:,.2f}<extra></extra>"
+        ),
+    ))
+    figure.update_layout(
+        height=280, paper_bgcolor="#fff", plot_bgcolor="#fff", showlegend=False,
+        margin={"l": 55, "r": 20, "t": 15, "b": 45},
+        xaxis_title=date_label, yaxis_title=label,
+    )
+    figure.update_xaxes(gridcolor="#e5e9ea", tickformat="%m-%d" if lang == "zh" else "%b %d")
+    figure.update_yaxes(gridcolor="#e5e9ea", tickformat=",.2f")
+    st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+
+
+def render_dashboard(page: str = "overview"):
+    base = build_snapshot(metrics, positions, position_history, selected_date, selected_sectors, contracts)
+    base = base[base["symbol"].isin(selected_symbols)]
+    coverage = build_current_coverage(
+        contracts, positions, selected_date, latest_weekday(selected_date)
+    )
+    coverage = coverage[coverage["symbol"].isin(selected_symbols)]
+    detail_symbol = None
+    if page == "detail":
+        st.header(cp(lang, "detail"))
+        if not selected_symbols:
+            st.info(cp(lang, "no_category"))
+            return
+        detail_symbol = st.selectbox(cp(lang, "symbols"), selected_symbols, key="detail_symbol",
+                                     format_func=lambda symbol: instrument_name(symbol, lang))
+        if detail_symbol not in set(base["symbol"]):
+            status = build_current_coverage(
+                contracts, positions, selected_date, latest_weekday(selected_date)
+            )
+            row = status[status["symbol"].eq(detail_symbol)].iloc[0]
+            st.warning(
+                f"{instrument_name(detail_symbol, lang)}：{row['status']}。{row['reason']}"
+                if lang == "zh" else
+                f"{instrument_name(detail_symbol, lang)}: member-level analysis is unavailable for this date."
+            )
+            price = contracts[(contracts["symbol"].eq(detail_symbol)) & contracts["source"].ne("demo") & contracts["close"].gt(0)].sort_values("trade_date").drop_duplicates("trade_date")
+            if not price.empty:
+                render_price_chart(price, lang)
+            return
+    category_rows, wide = build_three_category_snapshot(positions, base, selected_date)
+    if category_rows.empty or wide.empty or not selected_categories:
+        st.warning(cp(lang, "no_category")); st.stop()
+
+    if divergence_only:
+        wide = wide[wide["divergence_score"].ge(SIGNAL_THRESHOLDS["high_divergence"])]
+    if consensus_only:
+        wide = wide[wide["three_way_consensus"].ne(0)]
+    if major_only and not category_rows.empty:
+        threshold = category_rows["net_change"].abs().mean() + category_rows["net_change"].abs().std(ddof=0)
+        major_symbols = category_rows.loc[category_rows["net_change"].abs().ge(threshold), "symbol"].unique()
+        wide = wide[wide["symbol"].isin(major_symbols)]
+    category_rows = category_rows[category_rows["symbol"].isin(wide["symbol"])]
+    if wide.empty:
+        st.warning(cp(lang, "no_category")); st.stop()
+    display_categories = category_rows[category_rows["broker_category"].isin(selected_categories)]
+
+    latest_positions = positions[positions["source"].ne("demo") & positions["trade_date"].dt.date.le(selected_date)
+                                 & positions["symbol"].isin(base["symbol"])].copy()
+    if not latest_positions.empty:
+        latest_positions["latest"] = latest_positions.groupby("symbol")["trade_date"].transform("max")
+        latest_positions = enrich_broker_classification(latest_positions[latest_positions["trade_date"].eq(latest_positions["latest"])])
+    unclassified = sorted(latest_positions.loc[latest_positions["broker_category"].eq("other"), "broker_name_normalized"].unique()) if not latest_positions.empty else []
+
+    latest_update = pd.to_datetime(logs["attempted_at"]).max() if not logs.empty else pd.NaT
+    covered_exchange_codes = sorted(base["exchange"].dropna().unique())
+    covered_exchanges = "、".join(
+        EXCHANGE_NAMES_ZH.get(code, code) for code in covered_exchange_codes
+    ) if lang == "zh" else ", ".join(covered_exchange_codes)
+    updated_text = latest_update.strftime("%Y-%m-%d %H:%M") if pd.notna(latest_update) else "—"
+    kicker = "期货会员持仓 · 全市场图谱" if lang == "zh" else "INSTITUTIONAL POSITIONING · FUTURES ATLAS"
+    st.markdown(f'''<div class="report-head"><div><span class="kicker">{kicker}</span>
+    <h1>{cp(lang,"subtitle")}</h1><p>{cp(lang,"tagline")}</p></div><div class="meta"><b>{selected_date:%Y.%m.%d}</b><br>
+    {'更新时间' if lang=='zh' else 'Updated'}: {updated_text}<br>{'覆盖交易所' if lang=='zh' else 'Exchanges'}: {covered_exchanges}</div></div>''', unsafe_allow_html=True)
+
+    if unclassified:
+        with st.expander(f"⚠ {cp(lang, 'unclassified')}: {len(unclassified)} · {cp(lang, 'warning_help')}"):
+            st.write(" · ".join(unclassified))
+
+    if page == "overview":
+        ready_count = int(coverage["status"].eq("最新").sum())
+        unavailable = coverage[coverage["status"].ne("最新")].copy()
+        if lang == "zh":
+            st.caption(
+                f"当前筛选共 {len(coverage)} 个期货品种：{ready_count} 个可计算席位信号，"
+                f"{len(unavailable)} 个因交易所未发布排名、无活跃合约或暂无数据而仅保留在目录中。"
+            )
+        else:
+            st.caption(
+                f"{len(coverage)} futures products in the current filter: {ready_count} have "
+                f"computable member signals and {len(unavailable)} remain catalogued but unavailable."
+            )
+        if not unavailable.empty:
+            unavailable["name"] = unavailable["symbol"].map(
+                lambda symbol: instrument_name(symbol, lang)
+            )
+            if lang == "zh":
+                unavailable = unavailable[["name", "status", "reason"]].rename(
+                    columns={"name": "品种", "status": "当前状态", "reason": "原因"}
+                )
+                label = f"暂不可计算席位信号的品种 · {len(unavailable)}"
+            else:
+                unavailable = unavailable[["symbol", "name", "status", "reason"]].rename(
+                    columns={"symbol": "Code", "name": "Instrument", "status": "Status", "reason": "Reason"}
+                )
+                label = f"Products without computable member signals · {len(unavailable)}"
+            with st.expander(label):
+                st.dataframe(unavailable, hide_index=True, width="stretch")
+
+    if page == "detail":
+        detail = display_categories[display_categories["symbol"].eq(detail_symbol)]
+        columns = st.columns(max(len(selected_categories), 1))
+        for column, category in zip(columns, selected_categories):
+            row = detail[detail["broker_category"].eq(category)]
+            if not row.empty:
+                row = row.iloc[0]; column.metric(CATEGORY_LABELS[lang][category], f"{row['net_position']:+,.0f}", f"Δ {row['net_change']:+,.0f}")
+                column.caption(f"{'一致性' if lang=='zh' else 'Consensus'} {row['consistency']:+.0%}")
+        price = contracts[(contracts["symbol"].eq(detail_symbol)) & contracts["source"].ne("demo") & contracts["close"].gt(0)].sort_values("trade_date").drop_duplicates("trade_date")
+        render_price_chart(price, lang)
+        return
+
+    st.markdown(section_header("01", cp(lang, "overview"), cp(lang, "overview_note")), unsafe_allow_html=True)
+    st.markdown(overview_cards(display_categories, wide, lang, selected_categories), unsafe_allow_html=True)
+    st.markdown(section_header("02", cp(lang, "sector"), cp(lang, "sector_note")), unsafe_allow_html=True)
+    st.markdown(sector_matrix(display_categories, lang, selected_categories), unsafe_allow_html=True)
+
+    st.markdown(section_header("03", cp(lang, "map"), cp(lang, "map_note")), unsafe_allow_html=True)
+    chart_sectors = sorted(wide["sector"].dropna().unique())
+    default_chart_sector = "黑色" if "黑色" in chart_sectors else chart_sectors[0]
+    chart_sector_options = [None, *chart_sectors]
+    chart_sector = st.selectbox(
+        "图表板块" if lang == "zh" else "Chart sector",
+        chart_sector_options,
+        index=chart_sector_options.index(default_chart_sector),
+        format_func=lambda value: (
+            "全市场（悬浮查看品种）" if lang == "zh" else "Full market (hover for names)"
+        ) if value is None else sector_name(value, lang),
+        key="chart_sector",
+    )
+    map_category_rows = category_rows if chart_sector is None else category_rows[
+        category_rows["sector"].eq(chart_sector)
+    ]
+    map_wide = wide if chart_sector is None else wide[wide["sector"].eq(chart_sector)]
+    show_all_chart_labels = st.toggle(
+        "显示全部品种标签" if lang == "zh" else "Show all instrument labels",
+        value=False,
+        key="show_all_chart_labels",
+        help=(
+            "默认仅标注变化最明显的 6 个席位数据点；同一品种在不同席位类别中分别处理，所有点均可悬浮查看完整名称。"
+            if lang == "zh" else
+            "By default, only the six most notable seat data points are labelled; each seat category is handled separately, and every point retains its full hover name."
+        ),
+    )
+    st.caption(
+        f"当前图表展示 {len(map_wide)} 个品种；默认直接标注变化较大的 6 个席位数据点，其余可悬浮查看。"
+        if lang == "zh" else
+        f"The charts show {len(map_wide)} instruments. By default, six notable seat data points are labelled; hover for all names."
+    )
+    map_mode = st.segmented_control(cp(lang, "compare"), [cp(lang, "all")] + [CATEGORY_LABELS[lang][c] for c in selected_categories], default=cp(lang, "all"))
+    visible_categories = [
+        category for category in selected_categories
+        if map_mode == cp(lang, "all") or map_mode == CATEGORY_LABELS[lang][category]
+    ]
+    label_candidates = map_category_rows[
+        map_category_rows["broker_category"].isin(visible_categories)
+    ].copy()
+    label_candidates["label_priority"] = label_candidates["net_change"].abs()
+    label_candidates = label_candidates.sort_values("label_priority", ascending=False)
+    if not show_all_chart_labels:
+        label_candidates = label_candidates.head(6)
+    direct_label_keys = set(zip(label_candidates["symbol"], label_candidates["broker_category"]))
+    fig = go.Figure(); marker_symbols = {"qian_kun": "diamond", "institution": "circle", "retail": "triangle-up"}
+    for category in visible_categories:
+        block = map_category_rows[map_category_rows["broker_category"].eq(category)]
+        if block.empty: continue
+        gross = block["long_position"] + block["short_position"]
+        sizes = 12 + 28 * np.sqrt(gross / max(float(gross.max()), 1))
+        display_names = block["symbol"].map(lambda symbol: instrument_name(symbol, lang))
+        direct_labels = [
+            instrument_name(symbol, lang) if (symbol, category) in direct_label_keys else ""
+            for symbol in block["symbol"]
+        ]
+        fig.add_trace(go.Scatter(x=block["net_change"], y=block["consistency"] * 100,
+            mode="markers+text" if any(direct_labels) else "markers",
+            text=direct_labels,
+            textposition=radial_text_positions(block["net_change"], block["consistency"] * 100),
+            textfont={"size": 10},
+            name=CATEGORY_LABELS[lang][category], hovertext=display_names,
+            customdata=np.stack([block["net_position"], block["long_position"], block["short_position"], block["signal_score"]], axis=-1),
+            hovertemplate=("%{hovertext}<br>净仓变化 %{x:,.0f}<br>一致性 %{y:+.1f}%<br>净持仓 %{customdata[0]:,.0f}<br>多头 %{customdata[1]:,.0f}<br>空头 %{customdata[2]:,.0f}<br>信号 %{customdata[3]:+.2f}<extra></extra>" if lang == "zh" else "%{hovertext}<br>Net change %{x:,.0f}<br>Consensus %{y:+.1f}%<br>Net %{customdata[0]:,.0f}<br>Long %{customdata[1]:,.0f}<br>Short %{customdata[2]:,.0f}<br>Signal %{customdata[3]:+.2f}<extra></extra>"),
+            marker={"size": sizes, "color": CATEGORY_COLORS[category], "symbol": marker_symbols[category], "opacity": .8, "line": {"color": "white", "width": 1}}))
+    fig.add_hline(y=0, line_dash="dot", line_color="#8b959b"); fig.add_vline(x=0, line_dash="dot", line_color="#8b959b")
+    fig.update_layout(height=520, paper_bgcolor="#fff", plot_bgcolor="#fff", margin={"l":50,"r":25,"t":25,"b":45},
+                      xaxis_title="净仓变化" if lang=="zh" else "Net change", yaxis_title="一致性 (%)" if lang=="zh" else "Consensus (%)",
+                      legend={"orientation":"h","y":1.08}, font={"color":"#19242c"})
+    fig.update_xaxes(gridcolor="#e5e9ea", tickformat=",d" if lang == "zh" else None)
+    fig.update_yaxes(gridcolor="#e5e9ea")
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+    st.markdown(section_header("03B", cp(lang, "div_map"), cp(lang, "div_note")), unsafe_allow_html=True)
+    divergence_names = map_wide["symbol"].map(lambda symbol: instrument_name(symbol, lang))
+    divergence_label_rows = map_wide.sort_values("divergence_score", ascending=False)
+    if not show_all_chart_labels:
+        divergence_label_rows = divergence_label_rows.head(6)
+    divergence_label_symbols = set(divergence_label_rows["symbol"])
+    divergence_labels = [
+        instrument_name(symbol, lang) if symbol in divergence_label_symbols else ""
+        for symbol in map_wide["symbol"]
+    ]
+    fig2 = go.Figure(go.Scatter(x=map_wide["institution_signal"], y=map_wide["retail_signal"],
+        mode="markers+text" if any(divergence_labels) else "markers",
+        text=divergence_labels,
+        textposition=radial_text_positions(map_wide["institution_signal"], map_wide["retail_signal"]),
+        textfont={"size": 10},
+        hovertext=divergence_names,
+        customdata=np.stack([map_wide["qian_kun_signal"], map_wide["divergence_score"], map_wide["three_way_consensus"]], axis=-1),
+        hovertemplate=("%{hovertext}<br>机构 %{x:+.2f}<br>散户代理 %{y:+.2f}<br>乾坤 %{customdata[0]:+.2f}<br>分歧 %{customdata[1]:.2f}σ<extra></extra>" if lang == "zh" else "%{hovertext}<br>Institution %{x:+.2f}<br>Retail proxy %{y:+.2f}<br>Qian Kun %{customdata[0]:+.2f}<br>Divergence %{customdata[1]:.2f}σ<extra></extra>"),
+        marker={"size": 18 + map_wide["divergence_score"].clip(0,3)*8, "symbol":"diamond", "color":map_wide["qian_kun_signal"],
+                "colorscale":[[0,"#a85d65"],[.5,"#e6e2d8"],[1,"#29756c"]], "cmin":-2,"cmax":2,
+                "colorbar":{"title":"乾坤" if lang == "zh" else "Qian Kun"}, "line":{"color":"#fff","width":1}}))
+    fig2.add_hline(y=0,line_dash="dot",line_color="#8b959b"); fig2.add_vline(x=0,line_dash="dot",line_color="#8b959b")
+    fig2.update_layout(height=480,paper_bgcolor="#fff",plot_bgcolor="#fff",margin={"l":50,"r":30,"t":20,"b":45},
+                       xaxis_title="机构信号" if lang=="zh" else "Institution signal", yaxis_title="散户信号" if lang=="zh" else "Retail signal")
+    fig2.update_xaxes(gridcolor="#e5e9ea"); fig2.update_yaxes(gridcolor="#e5e9ea")
+    st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
+
+    st.markdown(section_header("04", cp(lang, "panorama"), cp(lang, "panorama_note")), unsafe_allow_html=True)
+    st.markdown(panorama_rows(wide, lang, selected_categories), unsafe_allow_html=True)
+    st.markdown(section_header("05", cp(lang, "changes"), cp(lang, "changes_note")), unsafe_allow_html=True)
+    st.markdown('<div class="change-grid">' + "".join(change_column(display_categories, c, lang) for c in selected_categories) + '</div>', unsafe_allow_html=True)
+    st.markdown(section_header("06", cp(lang, "monitor"), cp(lang, "monitor_note")), unsafe_allow_html=True)
+    st.markdown(monitor_cards(wide, lang), unsafe_allow_html=True)
+    st.markdown(section_header("07", cp(lang, "executive"), cp(lang, "executive_note")), unsafe_allow_html=True)
+    st.markdown('<div class="executive-box">' + "".join(f'<p>• {line}</p>' for line in executive_read(display_categories, wide, lang)) + '</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="caveat">{cp(lang,"data_limit")}</div>', unsafe_allow_html=True)
+
+
+navigation = st.navigation([
+    st.Page(lambda: render_dashboard("overview"), title="全景日报" if lang == "zh" else "Overview",
+            default=True),
+    st.Page(lambda: render_dashboard("detail"), title=cp(lang, "detail"), url_path="instrument"),
+    st.Page(render_broker_page, title=cp(lang, "broker"), url_path="brokers"),
+    st.Page(render_status_page, title=cp(lang, "status"), url_path="data-status"),
+], position="top")
+navigation.run()
