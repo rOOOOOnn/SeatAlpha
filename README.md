@@ -4,7 +4,7 @@
 
 ## 中文说明
 
-国内商品期货席位资金流监控与信号发现工具。项目完全运行在本地：从交易所公开数据更新，写入 DuckDB，并通过 Streamlit + Plotly 对外资、著名游资、机构型和散户代理四类客户持仓席位进行同口径比较。界面支持中文与英文即时切换。
+国内商品期货席位资金流监控与信号发现工具。项目完全运行在本地：从交易所公开数据更新，写入 DuckDB，并通过 Streamlit + Plotly 对外资、游资风格、机构型和散户代理四类客户持仓席位进行同口径比较。界面支持中文与英文即时切换。
 
 ### 快速开始（Windows）
 
@@ -42,7 +42,8 @@ backup_refresh_token = "可选的备用 refresh token"
 ### 页面功能
 
 - 顶部分层导航：商品、股指、国债期货三个独立市场，每个市场分别提供日报、品种详情、席位画像和数据状态
-- 四类总体概览：外资、著名游资、机构型、散户代理的净仓、今日变化、强弱品种横向比较
+- 可选的“国内大型期货公司观点”页面：启用外部观点数据源后，展示公司 × 板块评分、中期展望、当日观点明细和运行质量；未启用或数据源不可用时不影响原有页面
+- 四类总体概览：外资、游资风格、机构型、散户代理的净仓、今日变化、强弱品种横向比较
 - 分类方向速览：按板块比较四类席位的净仓、变化、一致性与方向标签
 - 一致性地图：固定使用不同形状区分类别；默认汇总展示每个板块分歧度和信号强度靠前的代表品种，也可切换单一板块或全市场
 - 核心品种全景：每个品种一行并排展示四类席位统计、分歧度和核心三方共振状态
@@ -51,9 +52,25 @@ backup_refresh_token = "可选的备用 refresh token"
 - 席位画像：单席位跨品种净持仓和变化分布
 - 数据状态：五家交易所最近更新状态、来源、覆盖日期和完整更新日志
 
+### 可选接入期货公司观点项目（规划）
+
+期货公司观点作为可选外部数据源接入，不把 `futures_view_pipeline_v0_1` 的爬虫、模型调用、密钥、缓存和中间文件复制进 SeatAlpha。SeatAlpha 默认保持独立运行；只有明确开启接入并提供有效数据目录时，商品导航才显示“国内大型期货公司观点”。关闭接入、目录不存在或质量门禁未通过时，原有行情和席位页面继续正常工作。
+
+计划使用以下配置，默认关闭：
+
+```toml
+[external_views]
+enabled = false
+root = "F:/广发固收/期货公司观点/futures_view_pipeline_v0_1"
+```
+
+本地运行时，适配层只读取对方项目已经校验的最终产物：`summary_YYYYMMDD.json`、`current_view_YYYYMMDD.json`、四家公司 JSON、`quality_report_YYYYMMDD.json` 和最终 Excel。网页分别还原 Excel 的“期货观点汇总”“中期展望”“当日观点明细”“运行与数据质量”四部分，并保留原始 Excel 下载入口。程序不会读取 `secrets/`、Prompt、模型原始回复或爬虫临时文件，也不会从 SeatAlpha 触发对方项目的采集和付费 API。
+
+GitHub 仓库只提交适配器、配置示例、页面代码和测试，不提交对方项目的密钥及本地原始数据。若需要在另一台机器或服务器使用，可把对方项目的 `output/` 作为只读目录挂载并修改 `root`；也可以以后增加一个脱敏同步步骤，把最终 JSON/Excel 镜像到 SeatAlpha 的本地数据目录。直接在 GitHub 上只有源码、没有挂载数据时，观点页面不会自动获得本机 Excel 内容。
+
 ### 四类席位配置
 
-分类名单与别名统一位于 `settings/broker_classification.py`，信号阈值位于 `settings/signal_thresholds.py`。外资类包括乾坤期货、摩根大通、瑞银期货和摩根士丹利期货；著名游资类包括中财期货、混沌天成、永安期货和新湖期货。高盛期货及其深圳名称会标准化为乾坤期货。不能可靠归类的名称保留为 `other`，页面显示数量并可展开查看；不会静默丢弃。
+分类名单与别名统一位于 `settings/broker_classification.py`，信号阈值位于 `settings/signal_thresholds.py`。外资类包括乾坤期货、摩根大通、瑞银期货和摩根士丹利期货；游资风格类包括中财期货、混沌天成、永安期货和新湖期货；机构型席位新增方正中期、国元期货和平安期货；散户代理席位仅保留东方财富、徽商期货、弘业期货和瑞达期货。高盛期货及其深圳名称会标准化为乾坤期货。不能可靠归类的名称保留为 `other`，页面显示数量并可展开查看；不会静默丢弃。
 
 数据流为：交易所原始排名 → 名称标准化 → 席位分类 → 同日期/品种/单一主力合约聚合 → 四类信号与分歧计算、外资/机构/散户代理核心三方共振计算 → 板块与页面视图。页面不把席位数据解释为期货公司的自营观点。
 
@@ -65,7 +82,7 @@ backup_refresh_token = "可选的备用 refresh token"
 
 当前目录覆盖上期所/上期能源、大商所、郑商所、广期所和中金所共 90 个期货品种。中金所股指与国债会员排名分别使用 iFinD 专题报表，并用相邻交易日持仓计算增减；账号无中金所普通行情权限时，行情改用已验证的 iFinD 专题行情报表。观察日仍自动显示当天，但在当日晚间数据发布窗口前，更新和新鲜度判断以上一个已完成交易日为基准。状态页只把每个品种最新记录用于新鲜度判断，旧的 8 月 21 日新浪备用数据仅保留在历史审计区，不再误报为当前延迟。目录存在但停牌、零持仓或未返回会员排名的品种会保留在目录中并明确标出原因。
 
-四类席位均是对交易所公布的客户持仓席位所做的研究分类，完整名单在状态页和 `settings/broker_classification.py` 中公开展示。“著名游资”是用户指定的会员席位组合，“散户代理席位”不是交易所直接披露的个人账户数据；所有类别都不代表对应期货公司的自营观点，未能可靠判断的会员保留为“未分类”。
+四类席位均是对交易所公布的客户持仓席位所做的研究分类，完整名单在状态页和 `settings/broker_classification.py` 中公开展示。“游资风格”是用户指定的会员席位组合，“散户代理席位”不是交易所直接披露的个人账户数据；所有类别都不代表对应期货公司的自营观点，未能可靠判断的会员保留为“未分类”。
 
 ### 开发与测试
 
@@ -78,7 +95,7 @@ conda run -n seatalpha ruff check .
 
 ## English
 
-SeatAlpha is a local research dashboard for monitoring member positioning in Chinese futures. It updates from public exchange data, stores normalized records in DuckDB, and compares foreign, notable active-trader, institutional, and retail-oriented client-position seats on an identical basis. The entire interface can switch instantly between Chinese and English.
+SeatAlpha is a local research dashboard for monitoring member positioning in Chinese futures. It updates from public exchange data, stores normalized records in DuckDB, and compares foreign, active-trading-style, institutional, and retail-oriented client-position seats on an identical basis. The entire interface can switch instantly between Chinese and English.
 
 ### Quick Start (Windows)
 
@@ -116,7 +133,8 @@ The local secrets file is Git-ignored. You may alternatively set `IFIND_REFRESH_
 ### Dashboard Views
 
 - Two-level top navigation: separate commodity, equity-index, and treasury-futures markets, each with its own daily view, instrument detail, broker profile, and data status
-- Four-category overview: side-by-side foreign, notable active-trader, institution, and retail-proxy positioning and daily changes
+- Optional China futures-company views page: when an external views source is enabled, it exposes company-by-sector scores, medium-term outlooks, daily evidence, and run quality; disabling or losing that source does not affect the existing dashboard
+- Four-category overview: side-by-side foreign, active-trading-style, institution, and retail-proxy positioning and daily changes
 - Sector direction: compact net position, change, consensus, and signal labels across seven sectors
 - Consensus and divergence maps: distinct marker identities, with sector leaders shown together by default and optional single-sector/full-market scopes
 - Core instrument panorama: one row per instrument with four category columns, divergence, and core three-way resonance state
@@ -125,9 +143,25 @@ The local secrets file is Git-ignored. You may alternatively set `IFIND_REFRESH_
 - Broker Profile: cross-instrument net positions and changes for an individual broker
 - Data Status: latest exchange update states, source lineage, coverage dates, and the complete update log
 
+### Optional Futures-Company Views Integration (Planned)
+
+Futures-company views are connected as an optional external data source. The crawler, model calls, secrets, caches, and intermediate files from `futures_view_pipeline_v0_1` are not copied into SeatAlpha. SeatAlpha remains standalone by default. The Commodities navigation shows the views page only when the integration is explicitly enabled and a valid data root is available. If the integration is disabled, the directory is missing, or its quality gate failed, the existing market and member-position pages continue to work.
+
+The planned configuration is disabled by default:
+
+```toml
+[external_views]
+enabled = false
+root = "F:/广发固收/期货公司观点/futures_view_pipeline_v0_1"
+```
+
+For local use, the adapter reads only validated final outputs: `summary_YYYYMMDD.json`, `current_view_YYYYMMDD.json`, the four company JSON files, `quality_report_YYYYMMDD.json`, and the final workbook. The page reconstructs the workbook's sector summary, medium-term outlook, daily-detail, and run-quality views and retains a download link to the original workbook. SeatAlpha never reads the other project's `secrets/`, prompts, raw model responses, or crawler scratch files, and it never triggers that project's collection or paid APIs.
+
+The GitHub repository stores only the adapter, configuration example, page code, and tests. It does not store the other project's credentials or local raw data. Another workstation or server can mount the pipeline's `output/` directory read-only and change `root`; a later sanitized sync step may instead mirror final JSON/workbooks into SeatAlpha's local data directory. Source code on GitHub alone cannot access Excel files that remain only on this computer, so the optional page stays unavailable until a data directory is mounted or synchronized.
+
 ### Seat Classification
 
-Edit aliases and the four category lists in `settings/broker_classification.py`; edit shared signal thresholds in `settings/signal_thresholds.py`. The foreign basket contains Qian Kun, J.P. Morgan, UBS, and Morgan Stanley Futures. The notable active-trader basket contains Zhongcai, Chaos Ternary, Yongan, and Xinhu Futures. Goldman Sachs Futures variants normalize to Qian Kun. Uncertain names remain `other`, are counted and exposed in the UI, and are never silently dropped.
+Edit aliases and the four category lists in `settings/broker_classification.py`; edit shared signal thresholds in `settings/signal_thresholds.py`. The foreign basket contains Qian Kun, J.P. Morgan, UBS, and Morgan Stanley Futures. The active-trading-style basket contains Zhongcai, Chaos Ternary, Yongan, and Xinhu Futures. Fangzheng CIFCO, Guoyuan Futures, and Ping An Futures are institutional seats. The retail-proxy basket is limited to East Money Futures, Huishang Futures, Holly Futures, and Ruida Futures. Goldman Sachs Futures variants normalize to Qian Kun. Uncertain names remain `other`, are counted and exposed in the UI, and are never silently dropped.
 
 The calculation flow is: raw exchange ranks → broker normalization → classification → identical date/instrument/single-contract aggregation → category signals and divergence/resonance → sector and presentation views. The categories describe exchange-published client-position seats, not futures-company proprietary views.
 
@@ -139,7 +173,7 @@ Quotes, main-contract member rankings and position history prefer iFinD, with pu
 
 The catalog covers 90 futures products across SHFE/INE, DCE, CZCE, GFEX, and CFFEX. CFFEX equity-index and treasury-bond rankings use their dedicated iFinD reports, with daily changes calculated from adjacent trading days. If ordinary CFFEX quotation entitlement is unavailable, the verified iFinD financial-futures report supplies the quote fields. The observation selector still defaults to today, but before the evening publication window updates and freshness checks use the previous completed trading day. Freshness uses only the newest record for each product; the August 21 Sina fallback remains visible solely in historical audit coverage. Listed products that are dormant, have zero open interest, or have no published member ranking stay in the catalog with an explicit reason.
 
-All four groups are research classifications of published client-position seats. The complete configured and currently observed member lists are visible on the Data Status page and maintained in `settings/broker_classification.py`. “Notable active traders” is a user-defined member basket; “retail proxy” is not exchange-disclosed individual-account data, and no category represents a futures company's proprietary house view. Uncertain members remain unclassified.
+All four groups are research classifications of published client-position seats. The complete configured and currently observed member lists are visible on the Data Status page and maintained in `settings/broker_classification.py`. “Active-trading style” is a user-defined member basket; “retail proxy” is not exchange-disclosed individual-account data, and no category represents a futures company's proprietary house view. Uncertain members remain unclassified.
 
 ### Development and Tests
 

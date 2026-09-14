@@ -93,6 +93,9 @@ def test_overview_maps_default_to_sector_leaders_instead_of_all_products():
         for trace in first_map["data"]
         for position in trace.get("textposition", [])
     )
+    download_buttons = app.get("download_button")
+    assert len(download_buttons) == 1
+    assert "HTML" in download_buttons[0].label
 
 
 def test_data_status_shows_hot_money_research_notes_in_both_languages():

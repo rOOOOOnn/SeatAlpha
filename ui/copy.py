@@ -1,6 +1,6 @@
 COPY = {
     "zh": {
-        "subtitle": "机构期货持仓全景", "tagline": "外资 · 著名游资 · 机构型席位 · 散户代理席位",
+        "subtitle": "机构期货持仓全景", "tagline": "外资 · 游资风格 · 机构型席位 · 散户代理席位",
         "update": "更新公开数据", "updating": "正在逐所更新与校验…", "date": "观察日期",
         "sectors": "品种板块", "symbols": "品种", "categories": "席位类别",
         "divergence_only": "只看分歧品种", "consensus_only": "只看三方共振",
@@ -17,10 +17,10 @@ COPY = {
         "position_date": "席位数据日期", "price_date": "行情数据日期",
         "no_category": "当前筛选下没有可分类的逐席位明细。", "source": "数据来源",
         "compare": "比较模式", "all": "全部类别", "warning_help": "展开查看并在配置中补充",
-        "data_limit": "席位分类是对交易所公布的客户持仓席位进行研究分组；“著名游资”是指定会员席位组合，“散户代理席位”并非个人账户数据，各分类均不代表期货公司自营观点。",
+        "data_limit": "席位分类是对交易所公布的客户持仓席位进行研究分组；“游资风格”是指定会员席位组合，“散户代理席位”并非个人账户数据，各分类均不代表期货公司自营观点。",
     },
     "en": {
-        "subtitle": "Institutional Futures Positioning Atlas", "tagline": "Foreign · Notable active traders · Institution · Retail proxy",
+        "subtitle": "Institutional Futures Positioning Atlas", "tagline": "Foreign · Active-trading style · Institution · Retail proxy",
         "update": "Update Public Data", "updating": "Updating and validating each exchange…", "date": "As-of Date",
         "sectors": "Sectors", "symbols": "Instruments", "categories": "Seat Categories",
         "divergence_only": "Divergence only", "consensus_only": "Three-way resonance only",
@@ -37,7 +37,7 @@ COPY = {
         "position_date": "Position date", "price_date": "Price date",
         "no_category": "No classifiable member-level detail matches the current filters.", "source": "Sources",
         "compare": "Compare mode", "all": "All categories", "warning_help": "Expand and add them to the configuration",
-        "data_limit": "Categories group exchange-published client-position seats. Notable active traders are a named member basket; retail proxy is not personal-account data. No category represents a futures-company house view.",
+        "data_limit": "Categories group exchange-published client-position seats. Active-trading style is a named member basket; retail proxy is not personal-account data. No category represents a futures-company house view.",
     },
 }
 

@@ -6,6 +6,7 @@ from services.position_aggregator import (
     aggregate_category_positions,
     build_three_category_snapshot,
 )
+from settings.broker_classification import SEAT_CLASSIFICATION
 
 
 def test_aliases_and_research_categories_are_normalized_once():
@@ -19,6 +20,14 @@ def test_aliases_and_research_categories_are_normalized_once():
     assert classify_broker("永安期货") == "hot_money"
     assert classify_broker("中财期货") == "hot_money"
     assert classify_broker("新湖期货") == "hot_money"
+    assert classify_broker("方正中期") == "institution"
+    assert classify_broker("国元") == "institution"
+    assert classify_broker("平安期货") == "institution"
+    assert classify_broker("东方财富期货") == "retail"
+    assert classify_broker("徽商期货") == "retail"
+    assert classify_broker("弘业期货") == "retail"
+    assert classify_broker("瑞达期货") == "retail"
+    assert classify_broker("国贸期货") == "other"
 
 
 def test_unknown_broker_is_retained_as_other():
@@ -27,11 +36,26 @@ def test_unknown_broker_is_retained_as_other():
     assert result.iloc[0]["broker_category"] == "other"
 
 
+def test_institution_and_retail_baskets_match_configured_scope():
+    assert {"方正中期", "国元期货", "平安期货"}.issubset(
+        SEAT_CLASSIFICATION["institution"]
+    )
+    assert SEAT_CLASSIFICATION["retail"] == {
+        "东方财富", "徽商期货", "弘业期货", "瑞达期货",
+    }
+    configured = [
+        broker
+        for brokers in SEAT_CLASSIFICATION.values()
+        for broker in brokers
+    ]
+    assert len(configured) == len(set(configured))
+
+
 def test_category_aggregation_uses_identical_contract_population():
     rows = [
         ("高盛期货", 120, 60, 12, 2),
         ("中信期货", 300, 200, 20, 5),
-        ("方正中期", 100, 180, -4, 10),
+        ("东方财富", 100, 180, -4, 10),
         ("永安期货", 90, 70, 6, 1),
         ("未知席位", 50, 50, 0, 0),
     ]
@@ -63,7 +87,7 @@ def test_three_way_snapshot_builds_divergence_and_consensus():
         for broker, lp, sp, lc, sc in (
             ("高盛期货", 120 + 30 * scale, 100, 8 * scale, 0),
             ("中信期货", 220 + 40 * scale, 200, 10 * scale, 0),
-            ("方正中期", 100, 140 + 20 * scale, 0, 7 * scale),
+            ("东方财富", 100, 140 + 20 * scale, 0, 7 * scale),
             ("中财期货", 90 + 20 * scale, 80, 5 * scale, 0),
         )
     ])

@@ -19,6 +19,7 @@ from pipeline.update import latest_weekday, update
 from services.broker_classifier import classify_broker, enrich_broker_classification
 from services.data_status import build_current_coverage, historical_source_coverage
 from services.position_aggregator import build_three_category_snapshot
+from services.static_report import build_static_daily_report
 from settings.broker_classification import (
     CATEGORY_LABELS,
     CATEGORY_ORDER,
@@ -371,7 +372,7 @@ def render_status_page():
 
     st.subheader("席位分类说明" if lang == "zh" else "Seat classification")
     if lang == "zh":
-        st.warning("“外资”“著名游资”“机构”“散户代理”均为对交易所会员持仓排名的研究分类，不代表期货公司的自营观点；“散户代理”也不是个人账户数据。外资按外资控股期货公司归类，著名游资为中财、混沌天成、永安、新湖四个席位。")
+        st.warning("“外资”“游资风格”“机构型席位”“散户代理席位”均为对交易所会员持仓排名的研究分类，不代表期货公司的自营观点；“散户代理席位”也不是个人账户数据。游资风格为中财、混沌天成、永安、新湖四个指定席位；散户代理席位仅包含东方财富、徽商期货、弘业期货、瑞达期货。")
     latest_real = positions[
         positions["source"].ne("demo") & positions["trade_date"].dt.date.le(selected_date)
         & positions["symbol"].isin(MARKET_SYMBOLS[market_group])
@@ -537,6 +538,39 @@ def render_dashboard(page: str = "overview"):
     st.markdown(f'''<div class="report-head"><div><span class="kicker">{kicker}</span>
     <h1>{report_title}</h1><p>{cp(lang,"tagline")}</p></div><div class="meta"><b>{selected_date:%Y.%m.%d}</b><br>
     {'更新时间' if lang=='zh' else 'Updated'}: {updated_text}<br>{'覆盖交易所' if lang=='zh' else 'Exchanges'}: {covered_exchanges}</div></div>''', unsafe_allow_html=True)
+
+    if page == "overview":
+        # Generate the standalone snapshot only when requested so routine page
+        # loads and filter reruns remain fast.
+        def generate_static_report():
+            return build_static_daily_report(
+                display_categories,
+                wide,
+                coverage,
+                selected_date,
+                market_label,
+                lang,
+                selected_categories,
+                updated_at=latest_update,
+            )
+
+        st.download_button(
+            "↓ 导出当日静态日报（HTML）" if lang == "zh" else "↓ Export daily snapshot (HTML)",
+            data=generate_static_report,
+            file_name=f"SeatAlpha_{market_group}_{selected_date:%Y-%m-%d}.html",
+            mime="text/html",
+            width="stretch",
+            help=(
+                "导出当前市场、日期与筛选条件的数据快照；文件可离线打开，但不会自动更新。"
+                if lang == "zh" else
+                "Exports the current market, date and filters as an offline snapshot; the file will not update automatically."
+            ),
+        )
+        st.caption(
+            "HTML 已内嵌当前数据与图表，可直接发送；接收者无需安装 Python 或连接 iFinD。"
+            if lang == "zh" else
+            "The HTML embeds the current data and charts; recipients need neither Python nor an iFinD connection."
+        )
 
     if unclassified:
         with st.expander(f"⚠ {cp(lang, 'unclassified')}: {len(unclassified)} · {cp(lang, 'warning_help')}"):
