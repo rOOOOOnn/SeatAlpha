@@ -44,6 +44,13 @@ def test_instrument_page_lists_every_product_and_keeps_unavailable_products_visi
     assert not app.exception
     assert any("聚乙烯月均价：暂无数据" in item.value for item in app.warning)
 
+    # An unavailable instrument remains safe through repeated localization
+    # reruns, where selectbox labels and page titles both change.
+    for language in ("English", "中文", "English", "中文"):
+        app.radio[0].set_value(language).run()
+        assert not app.exception
+        assert any("unavailable" in item.value or "暂无数据" in item.value for item in app.warning)
+
 
 def test_financial_market_pages_keep_equity_and_treasury_products_separate():
     app = AppTest.from_file(
@@ -66,6 +73,16 @@ def test_financial_market_pages_keep_equity_and_treasury_products_separate():
     }
     assert [heading.value for heading in app.header] == ["国债期货品种详情"]
 
+    app._page_hash = calc_hash("equity-overview")
+    app.run()
+    assert not app.exception
+    assert any("<h3>股指期货</h3>" in item.value for item in app.markdown)
+
+    app._page_hash = calc_hash("treasury-overview")
+    app.run()
+    assert not app.exception
+    assert any("<h3>国债期货</h3>" in item.value for item in app.markdown)
+
 
 def test_overview_maps_default_to_sector_leaders_instead_of_all_products():
     app = AppTest.from_file(
@@ -78,7 +95,8 @@ def test_overview_maps_default_to_sector_leaders_instead_of_all_products():
     top_n = next(item for item in app.slider if item.label == "每个板块显示品种数")
     assert top_n.value == 2
     assert any("当前图表展示" in item.value for item in app.caption)
-    assert any(item.label == "显示全部品种标签" for item in app.toggle)
+    label_toggle = next(item for item in app.toggle if item.label == "显示全部品种标签")
+    assert label_toggle.value is True
 
     first_map = json.loads(app.get("plotly_chart")[0].proto.spec)
     direct_labels = [
@@ -87,12 +105,21 @@ def test_overview_maps_default_to_sector_leaders_instead_of_all_products():
         for label in trace.get("text", [])
         if label
     ]
-    assert len(direct_labels) <= 12
+    assert len(direct_labels) > 12
+    assert all(trace.get("text") and all(trace["text"]) for trace in first_map["data"])
     assert any(
         position != "middle right"
         for trace in first_map["data"]
         for position in trace.get("textposition", [])
     )
+    divergence_map = json.loads(app.get("plotly_chart")[1].proto.spec)
+    assert len(divergence_map["data"]) == 1
+    assert divergence_map["data"][0]["marker"]["symbol"] == "circle"
+    assert "外资" not in divergence_map["data"][0]["hovertemplate"]
+    assert any("快速说明" in item.value and "总持仓" in item.value for item in app.markdown)
+    guides = [item.value for item in app.markdown if 'class="quick-guide"' in item.value]
+    assert len(guides) == 2
+    assert guides[0] == guides[1]
     download_buttons = app.get("download_button")
     assert len(download_buttons) == 1
     assert "HTML" in download_buttons[0].label

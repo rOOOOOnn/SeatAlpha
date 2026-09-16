@@ -72,6 +72,11 @@ def test_static_daily_report_is_self_contained_and_scoped():
     assert "本文件的数据不会自动更新" in report
     assert '<svg viewBox="0 0 1200 500"' in report
     assert 'aria-label="四类席位一致性地图"' in report
+    assert 'aria-label="机构与散户代理分歧地图"' in report
+    assert "快速说明" in report
+    assert report.count('class="quick-guide"') == 2
+    assert "外资偏多" not in report
+    assert 'class="tri-bar"' in report
     assert "<script" not in report
 
 
@@ -92,3 +97,4 @@ def test_static_daily_report_localizes_english_copy():
     assert "Static data snapshot" in report
     assert "Copper" in report
     assert "iFinD Price History" in report
+    assert "Institution–retail divergence map" in report

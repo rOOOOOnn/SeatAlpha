@@ -52,19 +52,26 @@ backup_refresh_token = "可选的备用 refresh token"
 - 席位画像：单席位跨品种净持仓和变化分布
 - 数据状态：五家交易所最近更新状态、来源、覆盖日期和完整更新日志
 
-### 可选接入期货公司观点项目（规划）
+### 可选接入期货公司观点项目
 
 期货公司观点作为可选外部数据源接入，不把 `futures_view_pipeline_v0_1` 的爬虫、模型调用、密钥、缓存和中间文件复制进 SeatAlpha。SeatAlpha 默认保持独立运行；只有明确开启接入并提供有效数据目录时，商品导航才显示“国内大型期货公司观点”。关闭接入、目录不存在或质量门禁未通过时，原有行情和席位页面继续正常工作。
 
-计划使用以下配置，默认关闭：
+在 `.streamlit/secrets.toml` 使用以下配置，默认关闭；也可以在侧栏按当前会话临时开启：
 
 ```toml
 [external_views]
 enabled = false
 root = "F:/广发固收/期货公司观点/futures_view_pipeline_v0_1"
+auto_update = true
+llm_backend = "api"
+timeout_seconds = 3600
 ```
 
-本地运行时，适配层只读取对方项目已经校验的最终产物：`summary_YYYYMMDD.json`、`current_view_YYYYMMDD.json`、四家公司 JSON、`quality_report_YYYYMMDD.json` 和最终 Excel。网页分别还原 Excel 的“期货观点汇总”“中期展望”“当日观点明细”“运行与数据质量”四部分，并保留原始 Excel 下载入口。程序不会读取 `secrets/`、Prompt、模型原始回复或爬虫临时文件，也不会从 SeatAlpha 触发对方项目的采集和付费 API。
+启用自动更新后，SeatAlpha 按最新应发布交易日检查 `quality_report_YYYYMMDD.json`。数据已通过质量门禁时不重复运行；缺失时调用对方项目的 `run_all.ps1`，由其完成采集、分类、数据库同步、Excel 生成和严格质量检查。进程锁会阻止多个 Streamlit 会话重复更新，失败也不会中断 SeatAlpha 原有行情与席位页面。自动更新可能调用对方项目已经配置的模型/API；可设置 `auto_update = false` 后只使用页面上的手动更新按钮。
+
+展示时，适配层只读取已经校验的最终产物和 `data/view_database.sqlite3`。网页还原 Excel 的“期货观点汇总”“中期展望”“当日观点明细”“运行与数据质量”，另提供 SQLite 全量历史观点页和原始 Excel 下载入口。程序不会读取或展示 `secrets/`、Prompt、模型原始回复或爬虫临时文件。
+
+上述配置也可使用环境变量覆盖：`SEATALPHA_FUTURES_VIEW_ENABLED`、`SEATALPHA_FUTURES_VIEW_ROOT`、`SEATALPHA_FUTURES_VIEW_AUTO_UPDATE`、`SEATALPHA_FUTURES_VIEW_LLM_BACKEND` 和 `SEATALPHA_FUTURES_VIEW_TIMEOUT_SECONDS`。
 
 GitHub 仓库只提交适配器、配置示例、页面代码和测试，不提交对方项目的密钥及本地原始数据。若需要在另一台机器或服务器使用，可把对方项目的 `output/` 作为只读目录挂载并修改 `root`；也可以以后增加一个脱敏同步步骤，把最终 JSON/Excel 镜像到 SeatAlpha 的本地数据目录。直接在 GitHub 上只有源码、没有挂载数据时，观点页面不会自动获得本机 Excel 内容。
 
@@ -143,19 +150,26 @@ The local secrets file is Git-ignored. You may alternatively set `IFIND_REFRESH_
 - Broker Profile: cross-instrument net positions and changes for an individual broker
 - Data Status: latest exchange update states, source lineage, coverage dates, and the complete update log
 
-### Optional Futures-Company Views Integration (Planned)
+### Optional Futures-Company Views Integration
 
 Futures-company views are connected as an optional external data source. The crawler, model calls, secrets, caches, and intermediate files from `futures_view_pipeline_v0_1` are not copied into SeatAlpha. SeatAlpha remains standalone by default. The Commodities navigation shows the views page only when the integration is explicitly enabled and a valid data root is available. If the integration is disabled, the directory is missing, or its quality gate failed, the existing market and member-position pages continue to work.
 
-The planned configuration is disabled by default:
+Add the following to `.streamlit/secrets.toml`. It is disabled by default and can also be enabled temporarily for the current session from the sidebar:
 
 ```toml
 [external_views]
 enabled = false
 root = "F:/广发固收/期货公司观点/futures_view_pipeline_v0_1"
+auto_update = true
+llm_backend = "api"
+timeout_seconds = 3600
 ```
 
-For local use, the adapter reads only validated final outputs: `summary_YYYYMMDD.json`, `current_view_YYYYMMDD.json`, the four company JSON files, `quality_report_YYYYMMDD.json`, and the final workbook. The page reconstructs the workbook's sector summary, medium-term outlook, daily-detail, and run-quality views and retains a download link to the original workbook. SeatAlpha never reads the other project's `secrets/`, prompts, raw model responses, or crawler scratch files, and it never triggers that project's collection or paid APIs.
+With automatic updates enabled, SeatAlpha checks the latest publishable trading day's `quality_report_YYYYMMDD.json`. It skips dates that already passed the quality gate. Missing dates invoke the source project's `run_all.ps1`, which owns collection, classification, database synchronization, workbook generation, and strict validation. A process lock prevents duplicate runs from concurrent Streamlit sessions, and failures do not interrupt the existing dashboard. Automatic updates may use the model/API already configured in the source project; set `auto_update = false` to update only through the page button.
+
+For display, the adapter reads only validated final outputs and `data/view_database.sqlite3`. It reconstructs the workbook's sector summary, medium-term outlook, daily-detail, and run-quality views, adds the full SQLite history, and retains a download link to the original workbook. SeatAlpha never reads or displays the other project's secrets, prompts, raw model responses, or crawler scratch files.
+
+Environment overrides are also supported: `SEATALPHA_FUTURES_VIEW_ENABLED`, `SEATALPHA_FUTURES_VIEW_ROOT`, `SEATALPHA_FUTURES_VIEW_AUTO_UPDATE`, `SEATALPHA_FUTURES_VIEW_LLM_BACKEND`, and `SEATALPHA_FUTURES_VIEW_TIMEOUT_SECONDS`.
 
 The GitHub repository stores only the adapter, configuration example, page code, and tests. It does not store the other project's credentials or local raw data. Another workstation or server can mount the pipeline's `output/` directory read-only and change `root`; a later sanitized sync step may instead mirror final JSON/workbooks into SeatAlpha's local data directory. Source code on GitHub alone cannot access Excel files that remain only on this computer, so the optional page stays unavailable until a data directory is mounted or synchronized.
 

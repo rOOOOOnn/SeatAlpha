@@ -42,3 +42,22 @@ def test_rankings_show_full_instrument_names_in_both_languages():
 def test_combined_source_lineage_is_localized():
     value = source_name("price=ifind-http|positions=official-via-akshare", "en")
     assert value == "Price Source: iFinD HTTP · Position Source: Exchange Public Data via AKShare"
+
+
+def test_executive_read_skips_categories_without_period_history():
+    import pandas as pd
+
+    from ui.report_components import executive_read
+
+    category_rows = pd.DataFrame([
+        {"symbol": "AU", "broker_category": "qian_kun", "net_change": 120.0},
+        {"symbol": "AU", "broker_category": "retail", "net_change": float("nan")},
+    ])
+    wide = pd.DataFrame([
+        {"symbol": "AU", "divergence_score": 1.5, "three_way_state": "high_divergence", "three_way_consensus": 0.0},
+    ])
+
+    lines = executive_read(category_rows, wide, "zh")
+
+    assert any("外资" in line for line in lines)
+    assert not any("散户代理" in line for line in lines)

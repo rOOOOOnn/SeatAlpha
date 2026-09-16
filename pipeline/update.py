@@ -26,7 +26,8 @@ from crawler.ifind_provider import (
     fetch_daily as fetch_ifind_daily,
 )
 from crawler.ifind_provider import (
-    fetch_position_history as fetch_ifind_position_history,
+    fetch_cffex_member_position_history,
+    fetch_position_history_bundle as fetch_ifind_position_history_bundle,
 )
 from crawler.ifind_provider import (
     fetch_price_history as fetch_ifind_price_history,
@@ -122,8 +123,61 @@ def _sync_position_snapshots(metrics: pd.DataFrame, path=DB_PATH) -> None:
         upsert_frame("position_history", snapshots[columns], ["trade_date", "exchange", "symbol", "contract"], path)
 
 
-def _backfill_position_history(target: date, path=DB_PATH, lookback_days: int = 28) -> None:
+def _backfill_cffex_member_positions(
+    target: date, path=DB_PATH, lookback_days: int = 45,
+) -> None:
+    """Backfill verified CFFEX daily rankings for 20-day category comparisons."""
+    if not ifind_is_configured():
+        return
+    desired = [stamp.date() for stamp in pd.bdate_range(target - timedelta(days=lookback_days), target)]
+    desired = desired[-25:]
+    completed, failed = 0, []
+    for trade_day in desired:
+        existing = query(
+            "SELECT count(DISTINCT symbol) n FROM broker_positions WHERE exchange='CFFEX' AND trade_date=? AND source<>'demo'",
+            [trade_day], path,
+        )
+        if int(existing.iloc[0]["n"]) >= 8:
+            completed += 1
+            continue
+        try:
+            contracts, member_positions, _ = fetch_ifind_daily("CFFEX", trade_day)
+            upsert_frame("contracts", contracts, ["trade_date", "exchange", "contract"], path)
+            _replace_position_partitions(member_positions, path)
+            completed += 1
+        except Exception as exc:  # noqa: BLE001 - holidays/individual unavailable dates are expected.
+            failed.append(f"{trade_day}: {exc}")
+    current_contracts = query(
+        """SELECT DISTINCT contract FROM contracts
+        WHERE exchange='CFFEX' AND trade_date=? AND is_main AND source<>'demo'""",
+        [target], path,
+    )
+    for contract in current_contracts["contract"].astype(str):
+        existing = query(
+            """SELECT count(DISTINCT trade_date) n FROM broker_positions
+            WHERE exchange='CFFEX' AND contract=? AND source='ifind-member-position-history'""",
+            [contract], path,
+        )
+        if int(existing.iloc[0]["n"]) >= 20:
+            continue
+        try:
+            fixed_history = fetch_cffex_member_position_history(
+                contract, target - timedelta(days=lookback_days), target
+            )
+            _replace_position_partitions(fixed_history, path)
+        except IFindError as exc:
+            failed.append(f"{contract}: {exc}")
+    _log(
+        "CFFEX", target, "success" if completed >= 20 else "partial", completed,
+        f"中金所逐席位历史回填完成 {completed} 个交易日"
+        + (f"；跳过/失败 {len(failed)} 日" if failed else ""),
+        path, "ifind-member-position-history",
+    )
+
+
+def _backfill_position_history(target: date, path=DB_PATH, lookback_days: int = 45) -> None:
     """Backfill real Top20 history one exchange at a time so failures stay isolated."""
+    _backfill_cffex_member_positions(target, path, lookback_days)
     for exchange in EXCHANGES:
         # CFFEX uses separate index/bond ranking reports. Daily snapshots are
         # persisted by _sync_position_snapshots; historical backfill is not mixed.
@@ -137,13 +191,18 @@ def _backfill_position_history(target: date, path=DB_PATH, lookback_days: int = 
             for contract in mains.contract:
                 existing_ifind = query("""SELECT count(*) n, max(trade_date) last_date FROM position_history
                     WHERE exchange=? AND contract=? AND source='ifind-position-history'""", [exchange, contract], path)
-                if int(existing_ifind.iloc[0]["n"]) >= 15 and pd.notna(existing_ifind.iloc[0]["last_date"]) and pd.Timestamp(existing_ifind.iloc[0]["last_date"]).date() >= target:
+                existing_members = query("""SELECT count(DISTINCT trade_date) n FROM broker_positions
+                    WHERE exchange=? AND contract=? AND source='ifind-member-position-history'""", [exchange, contract], path)
+                if (int(existing_ifind.iloc[0]["n"]) >= 20
+                        and int(existing_members.iloc[0]["n"]) >= 20
+                        and pd.notna(existing_ifind.iloc[0]["last_date"])
+                        and pd.Timestamp(existing_ifind.iloc[0]["last_date"]).date() >= target):
                     completed += 1
                     continue
                 pending.append(contract)
 
             def fetch_history(contract: str, exchange: str = exchange) -> pd.DataFrame:
-                return fetch_ifind_position_history(
+                return fetch_ifind_position_history_bundle(
                     contract, exchange, target-timedelta(days=lookback_days), target
                 )
 
@@ -152,8 +211,9 @@ def _backfill_position_history(target: date, path=DB_PATH, lookback_days: int = 
                 for future in as_completed(futures):
                     contract = futures[future]
                     try:
-                        history = future.result()
+                        history, member_history = future.result()
                         upsert_frame("position_history", history, ["trade_date", "exchange", "symbol", "contract"], path)
+                        _replace_position_partitions(member_history, path)
                         completed += 1
                     except IFindError as exc:
                         _log(exchange, target, "partial", 0, f"{contract} iFinD 持仓历史不可用：{exc}", path, "ifind-position-history")
@@ -168,7 +228,7 @@ def _backfill_position_history(target: date, path=DB_PATH, lookback_days: int = 
             [exchange], path,
         )
         last_date = existing.iloc[0]["last_date"]
-        if int(existing.iloc[0]["n"]) >= 15 and pd.notna(last_date) and pd.Timestamp(last_date).date() >= target:
+        if int(existing.iloc[0]["n"]) >= 20 and pd.notna(last_date) and pd.Timestamp(last_date).date() >= target:
             continue
         try:
             history = fetch_position_history(exchange, target - timedelta(days=lookback_days), target)

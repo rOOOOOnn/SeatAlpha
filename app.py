@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from config import DB_PATH, EXCHANGES, SYMBOL_META
+from config import DB_PATH, EXCHANGES, ROOT, SYMBOL_META
 from core.db import is_empty, query
 from dashboard_views import (
     broker_profile_rows,
@@ -18,6 +18,12 @@ from pipeline.seed_demo import seed
 from pipeline.update import latest_weekday, update
 from services.broker_classifier import classify_broker, enrich_broker_classification
 from services.data_status import build_current_coverage, historical_source_coverage
+from services.futures_views import (
+    available_view_dates,
+    load_futures_view_bundle,
+    load_futures_view_settings,
+    update_futures_views,
+)
 from services.position_aggregator import build_three_category_snapshot
 from services.static_report import build_static_daily_report
 from settings.broker_classification import (
@@ -33,6 +39,7 @@ from ui.report_components import (
     change_column,
     executive_read,
     monitor_cards,
+    metric_quick_guide,
     overview_cards,
     panorama_rows,
     section_header,
@@ -73,6 +80,9 @@ html,body,[class*="css"]{font-family:Inter,"Microsoft YaHei",sans-serif;color:va
 .meta{text-align:right;font-size:.68rem;line-height:1.75;color:var(--muted)}.meta b{font:700 .9rem monospace;color:var(--ink)}
 .section-head{display:grid;grid-template-columns:42px auto 1fr;align-items:end;gap:.65rem;border-bottom:1px solid var(--ink);padding:2.2rem 0 .75rem;margin-bottom:1rem}
 .section-head>span{font:700 .66rem monospace;color:var(--qk)}.section-head h2{font-size:1.25rem;margin:0}.section-head p{text-align:right;margin:0;color:var(--muted);font-size:.65rem}
+.metric-help{color:inherit!important;text-decoration:none;border-bottom:1px dotted #9aa3a8}.metric-help sup{color:var(--qk);font-weight:700}
+.quick-guide{background:#fff;border:1px solid var(--line);border-left:3px solid var(--qk);padding:.75rem 1rem;margin:0 0 .85rem;font-size:.69rem;line-height:1.75;color:#46545d}
+.formula-box{background:#fff;border:1px solid var(--line);padding:1.1rem 1.3rem;line-height:1.75;font-size:.78rem}.formula-box code{color:#704f12}.formula-box h4{margin:.7rem 0 .2rem}.formula-box p{margin:.15rem 0;color:#46545d}
 .overview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));background:#fff;border:1px solid var(--line)}
 .atlas-card{padding:1rem 1.15rem;border-right:1px solid var(--line);min-height:165px;border-top:3px solid var(--inst)}.atlas-card:last-child{border-right:0}
 .atlas-card.qian_kun{border-top-color:var(--qk)}.atlas-card.hot_money{border-top-color:var(--hot)}.atlas-card.retail{border-top-color:var(--retail)}.atlas-card.divergence{background:#f7f1df;border-top-color:var(--qk)}
@@ -85,7 +95,7 @@ html,body,[class*="css"]{font-family:Inter,"Microsoft YaHei",sans-serif;color:va
 .hbar{height:6px;background:#edf0f1;position:relative;margin:.65rem 0}.hbar i{position:absolute;left:50%;height:100%;border-left:1px solid #929da3}.hbar b{position:absolute;height:100%}
 .instrument-table{background:#fff;border:1px solid var(--line)}.instrument-head,.instrument-row{display:grid;grid-template-columns:145px repeat(3,1fr) 165px}.instrument-head{background:#edf0f1;border-bottom:1px solid var(--line)}.instrument-head span{padding:.55rem .8rem;font-size:.58rem;color:var(--muted)}
 .instrument-row{border-bottom:1px solid var(--line);min-height:88px}.instrument-row:last-child{border:0}.instrument-id,.tri-cell,.div-score{padding:.75rem .8rem;border-right:1px solid var(--line)}.instrument-id b{display:block;font-size:.78rem}.instrument-id span,.instrument-id small{display:block;color:var(--muted);font-size:.55rem;margin-top:.15rem}
-.tri-cell{display:grid;grid-template-columns:1fr auto;gap:.2rem}.tri-cell strong{font-size:.55rem;color:var(--muted)}.tri-cell b{font:700 .78rem monospace}.tri-cell span,.tri-cell em{font:500 .58rem monospace;color:var(--muted)}.tri-cell small{grid-column:1/3;width:max-content}.div-score{border:0}.div-score b{font:700 1rem monospace}.div-score span{display:block;font-size:.58rem;color:var(--muted);margin-top:.35rem}
+.tri-cell{display:grid;grid-template-columns:1fr auto;gap:.2rem}.tri-cell strong{font-size:.55rem;color:var(--muted)}.tri-cell b{font:700 .78rem monospace}.tri-cell span,.tri-cell em{font:500 .58rem monospace;color:var(--muted)}.tri-cell .tri-bar{grid-column:1/3}.tri-cell .tri-bar .hbar{margin:.22rem 0 .32rem}.tri-cell small{grid-column:1/3;width:max-content}.div-score{border:0}.div-score b{font:700 1rem monospace}.div-score span{display:block;font-size:.58rem;color:var(--muted);margin-top:.35rem}
 .change-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}.change-panel{background:#fff;padding:1rem;border-top:3px solid var(--inst)}.change-panel.qian_kun{border-top-color:var(--qk)}.change-panel.hot_money{border-top-color:var(--hot)}.change-panel.retail{border-top-color:var(--retail)}.change-panel h3{font-size:.82rem;margin:0 0 .8rem}
 .change-rank{border-top:1px solid var(--line);padding:.65rem 0 .25rem}.change-rank h4{font-size:.58rem;color:var(--muted);font-weight:600;margin:0 0 .35rem}.change-rank>small{font-size:.6rem;color:var(--muted)}
 .change-item{display:grid;grid-template-columns:minmax(76px,28%) minmax(0,1fr) 65px;gap:.5rem;align-items:center;margin:.6rem 0}.change-item b{font-size:.78rem;line-height:1.4;overflow-wrap:break-word}.change-item span{text-align:right;font:.62rem monospace}
@@ -178,14 +188,51 @@ metrics, positions, contracts, logs, position_history = load_data()
 for frame in (metrics, positions, contracts, position_history):
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
 
+try:
+    external_view_values = dict(st.secrets.get("external_views", {}))
+except (FileNotFoundError, KeyError, TypeError):
+    external_view_values = {}
+external_view_defaults = load_futures_view_settings(ROOT, external_view_values)
+if "external_views_enabled" not in st.session_state:
+    st.session_state["external_views_enabled"] = external_view_defaults.enabled
+external_view_settings = load_futures_view_settings(
+    ROOT,
+    {**external_view_values, "enabled": st.session_state["external_views_enabled"]},
+)
+
+if (
+    external_view_settings.enabled
+    and external_view_settings.project_available
+    and external_view_settings.auto_update
+):
+    external_target = latest_weekday()
+    refresh_key = f"external_views_refresh_{external_target.isoformat()}"
+    if not st.session_state.get(refresh_key):
+        with st.spinner("正在检查国内大型期货公司观点…"):
+            st.session_state["external_views_update_result"] = update_futures_views(
+                external_view_settings, external_target
+            )
+        st.session_state[refresh_key] = True
+
 lang = "en" if st.session_state.get("language_choice") == "English" else "zh"
+commodity_pages = [
+    st.Page(lambda: render_dashboard("overview"), title="商品日报" if lang == "zh" else "Commodity Daily", url_path="commodity-overview", default=True),
+    st.Page(lambda: render_dashboard("detail"), title=cp(lang, "detail"), url_path="commodity-instrument"),
+    st.Page(lambda: render_broker_page(), title=cp(lang, "broker"), url_path="commodity-brokers"),
+]
+if external_view_settings.enabled and external_view_settings.project_available:
+    commodity_pages.append(
+        st.Page(
+            lambda: render_futures_view_page(),
+            title="国内大型期货公司观点" if lang == "zh" else "Major futures-company views",
+            url_path="commodity-company-views",
+        )
+    )
+commodity_pages.append(
+    st.Page(lambda: render_status_page(), title=cp(lang, "status"), url_path="commodity-data-status")
+)
 market_pages = {
-    MARKET_LABELS[lang]["commodity"]: [
-        st.Page(lambda: render_dashboard("overview"), title="商品日报" if lang == "zh" else "Commodity Daily", url_path="commodity-overview", default=True),
-        st.Page(lambda: render_dashboard("detail"), title=cp(lang, "detail"), url_path="commodity-instrument"),
-        st.Page(lambda: render_broker_page(), title=cp(lang, "broker"), url_path="commodity-brokers"),
-        st.Page(lambda: render_status_page(), title=cp(lang, "status"), url_path="commodity-data-status"),
-    ],
+    MARKET_LABELS[lang]["commodity"]: commodity_pages,
     MARKET_LABELS[lang]["equity"]: [
         st.Page(lambda: render_dashboard("overview"), title="股指日报" if lang == "zh" else "Equity Index Daily", url_path="equity-overview"),
         st.Page(lambda: render_dashboard("detail"), title=cp(lang, "detail"), url_path="equity-instrument"),
@@ -218,6 +265,22 @@ with st.sidebar:
     )
     lang = "en" if language_choice == "English" else "zh"
     st.markdown(f'<div class="sidebar-brand"><b>◇ SEATALPHA</b><span>{cp(lang,"tagline")}</span></div>', unsafe_allow_html=True)
+    st.toggle(
+        "接入期货公司观点" if lang == "zh" else "Connect company views",
+        key="external_views_enabled",
+        help=(
+            "启用后自动调用 futures_view 项目并读取其 SQLite 数据库。"
+            if lang == "zh" else
+            "Calls the futures_view project automatically and reads its SQLite database."
+        ),
+    )
+    if st.session_state["external_views_enabled"]:
+        st.caption(str(external_view_settings.root))
+        if not external_view_settings.project_available:
+            st.warning(
+                "未找到有效的 futures_view 项目目录。"
+                if lang == "zh" else "The configured futures_view project is unavailable."
+            )
     if st.button(f"↻ {cp(lang, 'update')}", width="stretch", type="primary"):
         with st.spinner(cp(lang, "updating")):
             load_data.clear()
@@ -238,6 +301,18 @@ with st.sidebar:
                         | set(position_history.loc[position_history["source"].ne("demo"), "trade_date"].dt.date)
                         | {latest_published_date}, reverse=True)
     selected_date = st.selectbox(cp(lang, "date"), real_dates)
+    change_period_labels = {
+        1: "1日" if lang == "zh" else "1D",
+        5: "1周（5交易日）" if lang == "zh" else "1W (5 trading days)",
+        20: "1月（20交易日）" if lang == "zh" else "1M (20 trading days)",
+    }
+    change_period = st.segmented_control(
+        "变化周期" if lang == "zh" else "Change period",
+        list(change_period_labels), default=1, format_func=change_period_labels.get,
+        key=f"change_period_{market_group}",
+        help=("周/月变化只比较同一合约；历史不足时显示为‘—’。" if lang == "zh" else
+              "Weekly/monthly changes compare the same contract; insufficient history is shown as ‘—’."),
+    ) or 1
     st.caption(
         f"当前市场：{market_label}" if lang == "zh" else f"Current market: {market_label}"
     )
@@ -286,6 +361,191 @@ with st.sidebar:
     divergence_only = st.toggle(cp(lang, "divergence_only"))
     consensus_only = st.toggle(cp(lang, "consensus_only"))
     major_only = st.toggle(cp(lang, "major_only"))
+
+
+def render_futures_view_page():
+    st.header(
+        "国内大型期货公司观点" if lang == "zh" else "Major futures-company views"
+    )
+    st.caption(
+        "数据由 futures_view 项目采集和校验；SeatAlpha 自动调用其更新入口，并以只读方式查询 SQLite 历史库。"
+        if lang == "zh" else
+        "The futures_view project collects and validates the data. SeatAlpha invokes its updater and queries its SQLite history database read-only."
+    )
+
+    update_result = st.session_state.get("external_views_update_result")
+    if update_result and update_result.status == "failed":
+        st.error(update_result.message)
+        if update_result.output:
+            with st.expander("更新日志" if lang == "zh" else "Update log"):
+                st.code(update_result.output)
+    elif update_result and update_result.status == "updated":
+        st.success(update_result.message)
+
+    action_col, source_col = st.columns([1, 4])
+    with action_col:
+        if st.button(
+            "立即更新观点" if lang == "zh" else "Update views now",
+            type="primary",
+            width="stretch",
+        ):
+            with st.spinner("正在运行 futures_view…" if lang == "zh" else "Running futures_view…"):
+                result = update_futures_views(
+                    external_view_settings, latest_weekday(), force=True
+                )
+            st.session_state["external_views_update_result"] = result
+            st.rerun()
+    with source_col:
+        st.caption(
+            f"SQLite：{external_view_settings.database_path}"
+            if lang == "zh" else f"SQLite: {external_view_settings.database_path}"
+        )
+
+    available_dates = available_view_dates(external_view_settings)
+    if not available_dates:
+        st.warning(
+            "尚无通过质量门禁的观点数据。请检查更新日志或对方项目配置。"
+            if lang == "zh" else
+            "No views have passed the quality gate. Check the update log and source-project configuration."
+        )
+        return
+
+    selected_view_date = st.selectbox(
+        "观点日期" if lang == "zh" else "Views date",
+        available_dates,
+        key="futures_view_date",
+    )
+    try:
+        bundle = load_futures_view_bundle(external_view_settings, selected_view_date)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        st.error(str(exc))
+        return
+
+    company_names = ["广发期货", "中信期货", "国泰海通期货", "东证期货"]
+    summary_rows = []
+    for row in bundle.summary.get("rows", []):
+        summary_row = {"板块": row.get("sector")}
+        summary_row.update({company: row.get("scores", {}).get(company) for company in company_names})
+        summary_row.update({
+            "综合得分": row.get("average"),
+            "分歧": row.get("divergence"),
+            "一致性": row.get("consistency"),
+            "综合判断": row.get("judgement"),
+        })
+        summary_rows.append(summary_row)
+    summary_frame = pd.DataFrame(summary_rows)
+    outlook_frame = pd.DataFrame(bundle.outlook)
+    daily_frame = pd.DataFrame(bundle.daily_records)
+    history_frame = pd.DataFrame(bundle.history_records)
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("观点日期" if lang == "zh" else "Views date", selected_view_date.isoformat())
+    metric_cols[1].metric(
+        "当日观点" if lang == "zh" else "Daily views",
+        int(bundle.quality.get("total_records", len(daily_frame))),
+    )
+    metric_cols[2].metric(
+        "覆盖品种" if lang == "zh" else "Products",
+        int(bundle.summary.get("current_view_count", len(outlook_frame))),
+    )
+    metric_cols[3].metric(
+        "质量门禁" if lang == "zh" else "Quality gate",
+        "通过" if bundle.quality.get("passed") else "未通过",
+    )
+
+    if bundle.excel_path:
+        st.download_button(
+            "下载原始观点 Excel" if lang == "zh" else "Download source workbook",
+            data=bundle.excel_path.read_bytes(),
+            file_name=bundle.excel_path.name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    tab_summary, tab_outlook, tab_daily, tab_history, tab_quality = st.tabs(
+        [
+            "板块汇总" if lang == "zh" else "Sector summary",
+            "中期展望" if lang == "zh" else "Medium-term outlook",
+            "当日观点明细" if lang == "zh" else "Daily detail",
+            "观点历史库" if lang == "zh" else "Views history",
+            "运行与数据质量" if lang == "zh" else "Run quality",
+        ]
+    )
+    with tab_summary:
+        st.dataframe(summary_frame, hide_index=True, width="stretch")
+    with tab_outlook:
+        if outlook_frame.empty:
+            st.info("暂无中期展望。" if lang == "zh" else "No medium-term outlook is available.")
+        else:
+            outlook_columns = [
+                "commodity", "sector", "direction", "score", "last_update", "age_days",
+                "freshness", "sources", "supply", "demand", "inventory", "core_logic",
+                "medium_outlook",
+            ]
+            labels = {
+                "commodity": "品种", "sector": "板块", "direction": "方向", "score": "得分",
+                "last_update": "最近更新", "age_days": "数据年龄", "freshness": "新鲜度",
+                "sources": "来源机构", "supply": "供给", "demand": "需求", "inventory": "库存",
+                "core_logic": "核心逻辑", "medium_outlook": "中期展望",
+            }
+            st.dataframe(
+                outlook_frame[[column for column in outlook_columns if column in outlook_frame]].rename(columns=labels),
+                hide_index=True,
+                width="stretch",
+                height=620,
+            )
+    with tab_daily:
+        if daily_frame.empty:
+            st.info("数据库中没有当日新增观点。" if lang == "zh" else "No new daily views are stored in the database.")
+        else:
+            sectors = sorted(daily_frame["sector"].dropna().unique())
+            selected_daily_sectors = st.multiselect(
+                "筛选板块" if lang == "zh" else "Filter sectors",
+                sectors,
+                default=sectors,
+                key="futures_view_daily_sectors",
+            )
+            filtered_daily = daily_frame[daily_frame["sector"].isin(selected_daily_sectors)]
+            st.dataframe(filtered_daily, hide_index=True, width="stretch", height=620)
+    with tab_history:
+        if history_frame.empty:
+            st.info("观点历史库为空。" if lang == "zh" else "The views history database is empty.")
+        else:
+            companies = sorted(history_frame["company"].dropna().unique())
+            selected_companies = st.multiselect(
+                "筛选公司" if lang == "zh" else "Filter companies",
+                companies,
+                default=companies,
+                key="futures_view_history_companies",
+            )
+            filtered_history = history_frame[history_frame["company"].isin(selected_companies)]
+            st.caption(
+                f"共 {len(filtered_history):,} 条已校验历史观点。"
+                if lang == "zh" else f"{len(filtered_history):,} validated historical views."
+            )
+            st.dataframe(filtered_history, hide_index=True, width="stretch", height=650)
+    with tab_quality:
+        quality_rows = [
+            {"项目": key, "结果": str(value)}
+            for key, value in bundle.quality.items()
+            if key not in {"coverage", "issues", "warnings", "record_counts"}
+        ]
+        st.dataframe(pd.DataFrame(quality_rows), hide_index=True, width="stretch")
+        if bundle.quality.get("record_counts"):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"公司代码": company, "观点数": count}
+                        for company, count in bundle.quality["record_counts"].items()
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        for label, key in (("问题", "issues"), ("警告", "warnings")):
+            values = bundle.quality.get(key) or []
+            if values:
+                st.warning(f"{label}：" + "；".join(map(str, values)))
+
 
 def render_broker_page():
     st.header(market_page_title(cp(lang, "broker")))
@@ -464,9 +724,51 @@ def render_price_chart(price: pd.DataFrame, lang: str) -> None:
     st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
 
 
+def render_metric_formulas(change_period: int, lang: str) -> None:
+    period = {1: "1日", 5: "1周（5交易日）", 20: "1月（20交易日）"}.get(change_period, str(change_period))
+    if lang == "zh":
+        content = f"""
+        <div id="metric-formulas" class="formula-box">
+          <h3>指标定义与计算公式</h3>
+          <p><b>当前变化周期：</b>{period}。1日采用排名表公布的相对上一交易日增减；周/月采用同一合约当前快照与目标交易日前最近可用快照比较。历史不足显示“—”。</p>
+          <h4>仓位与变化</h4>
+          <p><code>净仓 = 多头持仓合计 − 空头持仓合计</code>；横条从中线向右为净多，向左为净空，长度表示绝对手数。</p>
+          <p><code>Δ净变化 = 多头持仓变化 − 空头持仓变化</code>。周/月比较不跨主力合约；排名进出也会影响公开 Top20 口径。</p>
+          <p><code>一致性 = (净加多席位数 − 净加空席位数) ÷ 有方向席位数</code>。它只统计方向，不按变化手数加权。</p>
+          <h4>信号与分歧</h4>
+          <p><code>总持仓 = 多头持仓 + 空头持仓</code>。它是方向信号的比例分母，并不等于净仓绝对值。</p>
+          <p><code>绝对方向分 = 0.55×净仓/总持仓 + 0.30×截断(Δ净变化/总持仓, −1, 1) + 0.15×一致性</code>。强多/偏多/中性/偏空/强空按这个绝对分划分，不再由品种之间的相对排名决定。</p>
+          <p><code>强多 ≥ +0.20；偏多 = +0.02 至 +0.20；中性 = −0.02 至 +0.02（不含边界）；偏空 = −0.20 至 −0.02；强空 ≤ −0.20</code>。板块标签先汇总板块净仓、总持仓和变化，再按有方向席位数加权一致性后计算，不对品种 Z 分做简单平均。</p>
+          <p><code>标准化信号 Z = (绝对方向分 − 同类别全品种均值) ÷ 同类别全品种标准差</code>。</p>
+          <p><code>四方分歧 = 四类标准化信号所有两两绝对距离的最大值</code>。页面显示的是标准化信号差，数值后的 σ 表示 Z 分差。</p>
+          <h4>机构—散户分歧图</h4>
+          <p>横轴＝机构型标准化信号；纵轴＝散户代理标准化信号；点大小＝两类信号的绝对距离。这里只保留两方，四类数据仍用于总体分歧值。</p>
+          <p><b>数据说明：</b>分类基于交易所公开会员持仓排名，不代表期货公司自营观点；“散户代理席位”也不是个人账户持仓。</p>
+          <p><a href="#metric-formulas">回到本说明</a></p>
+        </div>"""
+    else:
+        content = """
+        <div id="metric-formulas" class="formula-box"><h3>Metric definitions and formulas</h3>
+        <p><b>Net position</b> = total longs − total shorts. <b>Net change</b> = long change − short change.</p>
+        <p><b>Consensus</b> = (net-adding seats − net-reducing seats) / directional seats.</p>
+        <p><b>Gross position</b> = longs + shorts. <b>Absolute direction score</b> = 0.55×net/gross + 0.30×clipped(net change/gross) + 0.15×consensus. Direction labels use this absolute score.</p>
+        <p><b>Thresholds:</b> strong long ≥ +0.20; long from +0.02 to +0.20; neutral strictly between −0.02 and +0.02; short from −0.20 to −0.02; strong short ≤ −0.20. Sector labels use aggregated positions and seat-weighted consensus.</p>
+        <p>The score is standardized within each category only for relative ranking and divergence.</p>
+        <p><b>Four-way divergence</b> is the maximum absolute pairwise distance among the four standardized category signals.</p>
+        <p>The simplified chart uses institution on X, retail proxy on Y, and their absolute standardized-signal gap as point size.</p></div>"""
+    st.markdown(section_header("08", "指标说明" if lang == "zh" else "Metric guide",
+                               "完整口径与计算公式" if lang == "zh" else "Complete definitions and formulas"),
+                unsafe_allow_html=True)
+    st.markdown(content, unsafe_allow_html=True)
+
+
 def render_dashboard(page: str = "overview"):
     base = build_snapshot(metrics, positions, position_history, selected_date, selected_sectors, contracts)
     base = base[base["symbol"].isin(selected_symbols)]
+    if market_group == "equity":
+        base["sector"] = "股指期货"
+    elif market_group == "treasury":
+        base["sector"] = "国债期货"
     coverage = build_current_coverage(
         contracts, positions, selected_date, latest_weekday(selected_date)
     )
@@ -477,15 +779,20 @@ def render_dashboard(page: str = "overview"):
         if not selected_symbols:
             st.info(cp(lang, "no_category"))
             return
-        detail_symbol = st.selectbox(cp(lang, "symbols"), selected_symbols, key=f"detail_symbol_{market_group}",
+        detail_key = f"detail_symbol_{market_group}"
+        if detail_key in st.session_state and st.session_state[detail_key] not in selected_symbols:
+            st.session_state[detail_key] = selected_symbols[0]
+        detail_symbol = st.selectbox(cp(lang, "symbols"), selected_symbols, key=detail_key,
                                      format_func=lambda symbol: instrument_name(symbol, lang))
         if detail_symbol not in set(base["symbol"]):
-            status = build_current_coverage(
-                contracts, positions, selected_date, latest_weekday(selected_date)
-            )
-            row = status[status["symbol"].eq(detail_symbol)].iloc[0]
+            # The selectbox can retain a value across a language/filter rerun
+            # while the current snapshot has no matching coverage row.  Never
+            # index an empty lookup during that transient state.
+            matching_status = coverage[coverage["symbol"].eq(detail_symbol)]
+            status_text = matching_status.iloc[0]["status"] if not matching_status.empty else "暂无数据"
+            reason_text = matching_status.iloc[0]["reason"] if not matching_status.empty else "当前筛选下暂无该品种的可用记录"
             st.warning(
-                f"{instrument_name(detail_symbol, lang)}：{row['status']}。{row['reason']}"
+                f"{instrument_name(detail_symbol, lang)}：{status_text}。{reason_text}"
                 if lang == "zh" else
                 f"{instrument_name(detail_symbol, lang)}: member-level analysis is unavailable for this date."
             )
@@ -493,7 +800,9 @@ def render_dashboard(page: str = "overview"):
             if not price.empty:
                 render_price_chart(price, lang)
             return
-    category_rows, wide = build_three_category_snapshot(positions, base, selected_date)
+    category_rows, wide = build_three_category_snapshot(
+        positions, base, selected_date, change_period=change_period
+    )
     if category_rows.empty or wide.empty or not selected_categories:
         st.warning(cp(lang, "no_category")); st.stop()
 
@@ -538,6 +847,15 @@ def render_dashboard(page: str = "overview"):
     st.markdown(f'''<div class="report-head"><div><span class="kicker">{kicker}</span>
     <h1>{report_title}</h1><p>{cp(lang,"tagline")}</p></div><div class="meta"><b>{selected_date:%Y.%m.%d}</b><br>
     {'更新时间' if lang=='zh' else 'Updated'}: {updated_text}<br>{'覆盖交易所' if lang=='zh' else 'Exchanges'}: {covered_exchanges}</div></div>''', unsafe_allow_html=True)
+    if change_period > 1:
+        available_symbols = category_rows.loc[category_rows["change_available"], "symbol"].nunique()
+        missing_symbols = category_rows["symbol"].nunique() - available_symbols
+        if missing_symbols:
+            st.warning(
+                f"所选周期有 {missing_symbols} 个品种缺少同合约历史基线，其 Δ 和一致性显示为‘—’，不以 0 代替。"
+                if lang == "zh" else
+                f"{missing_symbols} instruments lack a same-contract baseline; change and consensus are shown as ‘—’, not zero."
+            )
 
     if page == "overview":
         # Generate the standalone snapshot only when requested so routine page
@@ -612,15 +930,56 @@ def render_dashboard(page: str = "overview"):
         for column, category in zip(columns, selected_categories):
             row = detail[detail["broker_category"].eq(category)]
             if not row.empty:
-                row = row.iloc[0]; column.metric(CATEGORY_LABELS[lang][category], f"{row['net_position']:+,.0f}", f"Δ {row['net_change']:+,.0f}")
-                column.caption(f"{'一致性' if lang=='zh' else 'Consensus'} {row['consistency']:+.0%}")
+                row = row.iloc[0]
+                delta_text = f"Δ {row['net_change']:+,.0f}" if pd.notna(row["net_change"]) else "Δ —"
+                column.metric(CATEGORY_LABELS[lang][category], f"{row['net_position']:+,.0f}", delta_text)
+                consistency_text = f"{row['consistency']:+.0%}" if pd.notna(row["consistency"]) else "—"
+                column.caption(f'{"一致性" if lang=="zh" else "Consensus"} {consistency_text}')
+        detail_contracts = detail["contract"].dropna().astype(str).unique().tolist()
+        detail_positions = positions[
+            positions["source"].ne("demo")
+            & positions["trade_date"].dt.date.le(selected_date)
+            & positions["symbol"].eq(detail_symbol)
+            & positions["contract"].astype(str).isin(detail_contracts)
+        ].copy()
+        if not detail_positions.empty:
+            detail_positions["latest"] = detail_positions["trade_date"].max()
+            detail_positions = detail_positions[detail_positions["trade_date"].eq(detail_positions["latest"])]
+            detail_positions = enrich_broker_classification(detail_positions)
+            detail_positions["net_position"] = detail_positions["long_position"] - detail_positions["short_position"]
+            detail_positions["gross_position"] = detail_positions["long_position"] + detail_positions["short_position"]
+            st.markdown(
+                "#### 各类最大仓位前 5 家" if lang == "zh" else "#### Top 5 seats by gross position in each category"
+            )
+            st.caption(
+                "按多头持仓＋空头持仓排序；净仓＝多头－空头。席位未进入当日公开排名时不会显示。"
+                if lang == "zh" else
+                "Ranked by long plus short positions; net equals long minus short. Seats absent from the published ranking are not shown."
+            )
+            top_columns = st.columns(max(len(selected_categories), 1))
+            for column, category in zip(top_columns, selected_categories):
+                ranked = detail_positions[detail_positions["broker_category"].eq(category)].nlargest(5, "gross_position")
+                with column:
+                    st.markdown(f"**{CATEGORY_LABELS[lang][category]}**")
+                    if ranked.empty:
+                        st.caption("—")
+                    else:
+                        shown = ranked[["broker_name_normalized", "long_position", "short_position", "net_position"]].rename(columns={
+                            "broker_name_normalized": "席位" if lang == "zh" else "Seat",
+                            "long_position": "多头" if lang == "zh" else "Long",
+                            "short_position": "空头" if lang == "zh" else "Short",
+                            "net_position": "净仓" if lang == "zh" else "Net",
+                        })
+                        st.dataframe(shown, hide_index=True, width="stretch")
         price = contracts[(contracts["symbol"].eq(detail_symbol)) & contracts["source"].ne("demo") & contracts["close"].gt(0)].sort_values("trade_date").drop_duplicates("trade_date")
         render_price_chart(price, lang)
+        render_metric_formulas(change_period, lang)
         return
 
     st.markdown(section_header("01", cp(lang, "overview"), cp(lang, "overview_note")), unsafe_allow_html=True)
     st.markdown(overview_cards(display_categories, wide, lang, selected_categories), unsafe_allow_html=True)
     st.markdown(section_header("02", cp(lang, "sector"), cp(lang, "sector_note")), unsafe_allow_html=True)
+    st.markdown(metric_quick_guide(lang), unsafe_allow_html=True)
     st.markdown(sector_matrix(display_categories, lang, selected_categories), unsafe_allow_html=True)
 
     st.markdown(section_header("03", cp(lang, "map"), cp(lang, "map_note")), unsafe_allow_html=True)
@@ -661,7 +1020,7 @@ def render_dashboard(page: str = "overview"):
     map_category_rows = category_rows[category_rows["symbol"].isin(map_wide["symbol"])]
     show_all_chart_labels = st.toggle(
         "显示全部品种标签" if lang == "zh" else "Show all instrument labels",
-        value=False,
+        value=True,
         key=f"show_all_chart_labels_{market_group}",
         help=(
             "默认仅标注变化最明显的席位数据点；同一品种在不同席位类别中分别处理，所有点均可悬浮查看完整名称。"
@@ -690,6 +1049,7 @@ def render_dashboard(page: str = "overview"):
     fig = go.Figure(); marker_symbols = {"qian_kun": "diamond", "hot_money": "star", "institution": "circle", "retail": "triangle-up"}
     for category in visible_categories:
         block = map_category_rows[map_category_rows["broker_category"].eq(category)]
+        block = block[block["net_change"].notna() & block["consistency"].notna()]
         if block.empty: continue
         gross = block["long_position"] + block["short_position"]
         sizes = 12 + 28 * np.sqrt(gross / max(float(gross.max()), 1))
@@ -716,8 +1076,9 @@ def render_dashboard(page: str = "overview"):
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
     st.markdown(section_header("03B", cp(lang, "div_map"), cp(lang, "div_note")), unsafe_allow_html=True)
-    divergence_names = map_wide["symbol"].map(lambda symbol: instrument_name(symbol, lang))
-    divergence_label_rows = map_wide.sort_values("divergence_score", ascending=False)
+    map_wide = map_wide.copy()
+    map_wide["institution_retail_gap"] = (map_wide["institution_signal"] - map_wide["retail_signal"]).abs()
+    divergence_label_rows = map_wide.sort_values("institution_retail_gap", ascending=False)
     if not show_all_chart_labels:
         divergence_label_rows = divergence_label_rows.head(6)
     divergence_label_symbols = set(divergence_label_rows["symbol"])
@@ -725,24 +1086,28 @@ def render_dashboard(page: str = "overview"):
         instrument_name(symbol, lang) if symbol in divergence_label_symbols else ""
         for symbol in map_wide["symbol"]
     ]
-    fig2 = go.Figure(go.Scatter(x=map_wide["institution_signal"], y=map_wide["retail_signal"],
-        mode="markers+text" if any(divergence_labels) else "markers",
-        text=divergence_labels,
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(
+        x=map_wide["institution_signal"], y=map_wide["retail_signal"],
+        mode="markers+text" if any(divergence_labels) else "markers", text=divergence_labels,
         textposition=radial_text_positions(map_wide["institution_signal"], map_wide["retail_signal"]),
-        textfont={"size": 10},
-        hovertext=divergence_names,
-        customdata=np.stack([map_wide["qian_kun_signal"], map_wide["divergence_score"], map_wide["three_way_consensus"]], axis=-1),
-        hovertemplate=("%{hovertext}<br>机构 %{x:+.2f}<br>散户代理 %{y:+.2f}<br>外资 %{customdata[0]:+.2f}<br>分歧 %{customdata[1]:.2f}σ<extra></extra>" if lang == "zh" else "%{hovertext}<br>Institution %{x:+.2f}<br>Retail proxy %{y:+.2f}<br>Foreign %{customdata[0]:+.2f}<br>Divergence %{customdata[1]:.2f}σ<extra></extra>"),
-        marker={"size": 18 + map_wide["divergence_score"].clip(0,3)*8, "symbol":"diamond", "color":map_wide["qian_kun_signal"],
-                "colorscale":[[0,"#a85d65"],[.5,"#e6e2d8"],[1,"#29756c"]], "cmin":-2,"cmax":2,
-                "colorbar":{"title":"外资" if lang == "zh" else "Foreign"}, "line":{"color":"#fff","width":1}}))
+        textfont={"size": 10}, showlegend=False,
+        hovertext=map_wide["symbol"].map(lambda symbol: instrument_name(symbol, lang)),
+        customdata=map_wide[["institution_retail_gap"]].to_numpy(),
+        hovertemplate=("%{hovertext}<br>机构 %{x:+.2f}<br>散户代理 %{y:+.2f}<br>两方分歧 %{customdata[0]:.2f} Z分<extra></extra>" if lang == "zh" else "%{hovertext}<br>Institution %{x:+.2f}<br>Retail proxy %{y:+.2f}<br>Two-party gap %{customdata[0]:.2f} Z pts<extra></extra>"),
+        marker={"size": 16 + map_wide["institution_retail_gap"].clip(0, 4) * 8,
+                "symbol": "circle", "color": "#315f78", "opacity": .78,
+                "line": {"color": "#fff", "width": 1}},
+    ))
     fig2.add_hline(y=0,line_dash="dot",line_color="#8b959b"); fig2.add_vline(x=0,line_dash="dot",line_color="#8b959b")
     fig2.update_layout(height=480,paper_bgcolor="#fff",plot_bgcolor="#fff",margin={"l":50,"r":30,"t":20,"b":45},
-                       xaxis_title="机构信号" if lang=="zh" else "Institution signal", yaxis_title="散户信号" if lang=="zh" else "Retail signal")
+                       xaxis_title="机构信号" if lang=="zh" else "Institution signal", yaxis_title="散户信号" if lang=="zh" else "Retail signal",
+                       showlegend=False)
     fig2.update_xaxes(gridcolor="#e5e9ea"); fig2.update_yaxes(gridcolor="#e5e9ea")
     st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
 
     st.markdown(section_header("04", cp(lang, "panorama"), cp(lang, "panorama_note")), unsafe_allow_html=True)
+    st.markdown(metric_quick_guide(lang), unsafe_allow_html=True)
     st.markdown(panorama_rows(wide, lang, selected_categories), unsafe_allow_html=True)
     st.markdown(section_header("05", cp(lang, "changes"), cp(lang, "changes_note")), unsafe_allow_html=True)
     st.markdown('<div class="change-grid">' + "".join(change_column(display_categories, c, lang) for c in selected_categories) + '</div>', unsafe_allow_html=True)
@@ -751,6 +1116,7 @@ def render_dashboard(page: str = "overview"):
     st.markdown(section_header("07", cp(lang, "executive"), cp(lang, "executive_note")), unsafe_allow_html=True)
     st.markdown('<div class="executive-box">' + "".join(f'<p>• {line}</p>' for line in executive_read(display_categories, wide, lang)) + '</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="caveat">{cp(lang,"data_limit")}</div>', unsafe_allow_html=True)
+    render_metric_formulas(change_period, lang)
 
 
 navigation.run()

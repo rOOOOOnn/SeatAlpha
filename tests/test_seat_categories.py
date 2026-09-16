@@ -6,6 +6,7 @@ from services.position_aggregator import (
     aggregate_category_positions,
     build_three_category_snapshot,
 )
+from services.signal_engine import direction_label, direction_score
 from settings.broker_classification import SEAT_CLASSIFICATION
 
 
@@ -105,3 +106,63 @@ def test_three_way_snapshot_builds_divergence_and_consensus():
     assert {"qk_inst_divergence", "qk_retail_divergence", "inst_retail_divergence",
             "three_way_consensus", "three_way_state"}.issubset(wide.columns)
     assert set(category["contract"].dropna()) == {"CU2610", "AL2610"}
+
+
+def test_snapshot_supports_same_contract_weekly_change_and_marks_missing_month():
+    positions = pd.DataFrame([
+        {"trade_date": day, "exchange": "SHFE", "symbol": "CU", "contract": "CU2610",
+         "broker": broker, "long_position": long_position, "short_position": short_position,
+         "long_change": 0, "short_change": 0, "source": "official"}
+        for day, values in (
+            ("2026-09-01", (("高盛期货", 120, 100), ("中信期货", 200, 180))),
+            ("2026-09-08", (("高盛期货", 150, 100), ("中信期货", 190, 200))),
+        )
+        for broker, long_position, short_position in values
+    ])
+    positions["trade_date"] = pd.to_datetime(positions["trade_date"])
+    base = pd.DataFrame([{
+        "symbol": "CU", "contract": "CU2610", "sector": "有色", "name": "沪铜",
+        "close": 100, "price_date": pd.Timestamp("2026-09-08"),
+    }])
+
+    weekly, _ = build_three_category_snapshot(
+        positions, base, pd.Timestamp("2026-09-08").date(), change_period=5
+    )
+    foreign = weekly[weekly["broker_category"].eq("qian_kun")].iloc[0]
+    assert foreign["change_available"]
+    assert foreign["net_change"] == 30
+    assert foreign["change_baseline_date"] == pd.Timestamp("2026-09-01")
+
+    monthly, _ = build_three_category_snapshot(
+        positions, base, pd.Timestamp("2026-09-08").date(), change_period=20
+    )
+    assert not monthly["change_available"].any()
+    assert monthly["net_change"].isna().all()
+
+
+def test_direction_labels_use_absolute_bounded_signal_not_cross_section_rank():
+    # A tiny current gross position must not let a large historical change
+    # produce an unbounded score or reverse an aggregate direction label.
+    assert direction_score(-4, 5, 303, -1 / 3) <= 0.25
+    assert direction_label(direction_score(-40_665, 100_000, -19_231, -1 / 3)) == "strong_short"
+    assert direction_label(direction_score(-394_772, 8_000_000, -93_125, .02)) == "short"
+
+
+def test_snapshot_keeps_direction_score_separate_from_relative_z_score():
+    positions = pd.DataFrame([
+        {"trade_date": "2026-09-01", "exchange": "SHFE", "symbol": symbol,
+         "contract": f"{symbol}2610", "broker": "方正中期",
+         "long_position": long_position, "short_position": short_position,
+         "long_change": 0, "short_change": 0, "source": "official"}
+        for symbol, long_position, short_position in (("CU", 90, 110), ("AL", 10, 190))
+    ])
+    positions["trade_date"] = pd.to_datetime(positions["trade_date"])
+    base = pd.DataFrame([
+        {"symbol": symbol, "contract": f"{symbol}2610", "sector": "有色", "name": symbol,
+         "close": 100, "price_date": pd.Timestamp("2026-09-01")}
+        for symbol in ("CU", "AL")
+    ])
+    category, wide = build_three_category_snapshot(positions, base, pd.Timestamp("2026-09-01").date())
+    institution = category[category["broker_category"].eq("institution")]
+    assert set(institution["signal_label"]) == {"short", "strong_short"}
+    assert {"institution_direction", "institution_signal"}.issubset(wide.columns)

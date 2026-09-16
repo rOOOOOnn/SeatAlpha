@@ -5,7 +5,7 @@ from html import escape
 import pandas as pd
 
 from i18n import instrument_name, sector_name
-from services.signal_engine import signal_label
+from services.signal_engine import direction_label, direction_score
 from settings.broker_classification import CATEGORY_LABELS, CATEGORY_ORDER
 
 CATEGORY_COLORS = {
@@ -33,7 +33,38 @@ def section_header(number: str, title: str, note: str) -> str:
 
 
 def _fmt_lots(value: float, lang: str) -> str:
+    if pd.isna(value):
+        return "—"
     return f"{value / 10_000:+,.1f}{'万' if lang == 'zh' else '×10k'}"
+
+
+def metric_quick_guide(lang: str, linked: bool = True) -> str:
+    def term(label: str) -> str:
+        return f'<a class="metric-help" href="#metric-formulas">{label}</a>' if linked else label
+    if lang == "zh":
+        text = (
+            f'<b>快速说明：</b>{term("净仓")}＝多头持仓−空头持仓；'
+            f'{term("Δ")}＝所选周期净仓变化；{term("一致性")}＝有方向席位的多空投票；'
+            f'{term("分歧")}＝四类标准化信号最大距离。'
+            '横条中线为零，向右表示净多、向左表示净空，长度表示净仓绝对值；'
+            '总持仓＝多头持仓＋空头持仓，是方向信号的比例分母。'
+        )
+        tail = '点击加下划线的指标查看完整公式。' if linked else ''
+    else:
+        text = (
+            f'<b>Quick guide:</b> {term("Net")} = long minus short; '
+            f'{term("Δ")} = net-position change over the selected period; '
+            f'{term("Consensus")} = directional seat vote; '
+            f'{term("Divergence")} = maximum distance between four standardized signals. '
+            'The bar centre is zero: right is net long, left is net short, and length is absolute net position. '
+            'Gross position = long plus short and is the denominator of the direction signal.'
+        )
+        tail = ' Select an underlined metric for the complete formulas.' if linked else ''
+    return f'<div class="quick-guide">{text}{tail}</div>'
+
+
+def _fmt_consistency(value: float) -> str:
+    return f"{value:+.0%}" if pd.notna(value) else "—"
 
 
 def _bar(value: float, scale: float, color: str) -> str:
@@ -50,15 +81,17 @@ def overview_cards(
     labels = CATEGORY_LABELS[lang]
     for category in categories:
         group = category_rows[category_rows["broker_category"].eq(category)]
-        net, change = group["net_position"].sum(), group["net_change"].sum()
-        long_count, short_count = int((group["signal_score"] > .25).sum()), int((group["signal_score"] < -.25).sum())
-        strongest = group.loc[group["signal_score"].idxmax(), "symbol"] if not group.empty else "—"
-        weakest = group.loc[group["signal_score"].idxmin(), "symbol"] if not group.empty else "—"
+        net, change = group["net_position"].sum(), group["net_change"].sum(min_count=1)
+        score_column = "direction_score" if "direction_score" in group else "signal_score"
+        long_count = int(group[score_column].map(direction_label).isin(["long", "strong_long"]).sum())
+        short_count = int(group[score_column].map(direction_label).isin(["short", "strong_short"]).sum())
+        strongest = group.loc[group[score_column].idxmax(), "symbol"] if not group.empty else "—"
+        weakest = group.loc[group[score_column].idxmin(), "symbol"] if not group.empty else "—"
         strongest = escape(instrument_name(strongest, lang))
         weakest = escape(instrument_name(weakest, lang))
         cards.append(f'''<div class="atlas-card {category}"><header><span class="shape"></span><b>{labels[category]}</b></header>
         <div class="big">{_fmt_lots(net, lang)}</div><small>{'净仓' if lang=='zh' else 'Net position'}</small>
-        <div class="delta">{_fmt_lots(change, lang)} <em>{'今日变化' if lang=='zh' else 'Today'}</em></div>
+        <div class="delta">{_fmt_lots(change, lang)} <em>{'所选周期变化' if lang=='zh' else 'Selected-period change'}</em></div>
         <footer><span>{'多头' if lang=='zh' else 'Long'} <b>{long_count}</b></span><span>{'空头' if lang=='zh' else 'Short'} <b>{short_count}</b></span><span>{'强' if lang=='zh' else 'High'} <b>{strongest}</b></span><span>{'弱' if lang=='zh' else 'Low'} <b>{weakest}</b></span></footer></div>''')
     if wide.empty:
         divergence = "—"
@@ -83,12 +116,25 @@ def sector_matrix(
         for category in categories:
             group = block[block["broker_category"].eq(category)]
             net = float(group["net_position"].sum())
-            change = float(group["net_change"].sum())
-            consistency = float(group["consistency"].mean()) if not group.empty else 0
-            score = float(group["signal_score"].mean()) if not group.empty else 0
-            signal = SIGNAL_COPY[lang][signal_label(score)]
-            cells.append(f'''<div class="sector-signal"><strong>{labels[category]}</strong><span class="signal {signal_label(score)}">{signal}</span>
-            {_bar(net, scale, CATEGORY_COLORS[category])}<small>{_fmt_lots(net, lang)} · Δ {_fmt_lots(change, lang)} · {consistency:+.0%}</small></div>''')
+            change = group["net_change"].sum(min_count=1)
+            directional_source = (
+                group["directional_count"]
+                if "directional_count" in group
+                else pd.Series(1.0, index=group.index)
+            )
+            directional = pd.to_numeric(directional_source, errors="coerce").fillna(0)
+            votes = pd.to_numeric(group["consistency"], errors="coerce")
+            vote_weight = directional.where(votes.notna(), 0)
+            consistency = (
+                float((votes.fillna(0) * vote_weight).sum() / vote_weight.sum())
+                if vote_weight.sum() else float("nan")
+            )
+            gross = float((group["long_position"] + group["short_position"]).sum())
+            score = direction_score(net, gross, 0 if pd.isna(change) else change, 0 if pd.isna(consistency) else consistency)
+            label = direction_label(score)
+            signal = SIGNAL_COPY[lang][label]
+            cells.append(f'''<div class="sector-signal"><strong>{labels[category]}</strong><span class="signal {label}">{signal}</span>
+            {_bar(net, scale, CATEGORY_COLORS[category])}<small>{_fmt_lots(net, lang)} · Δ {_fmt_lots(change, lang)} · {'一致性' if lang=='zh' else 'Consensus'} {_fmt_consistency(consistency)}</small></div>''')
         style = f"grid-template-columns:155px repeat({len(categories)},1fr)"
         sections.append(f'<div class="sector-row" style="{style}"><h3>{escape(sector_name(sector, lang))}</h3>{"".join(cells)}</div>')
     return '<div class="sector-matrix">' + "".join(sections) + "</div>"
@@ -101,14 +147,22 @@ def panorama_rows(
     labels = CATEGORY_LABELS[lang]
     if wide.empty:
         return ""
+    net_values = [
+        abs(float(value))
+        for category in categories
+        for value in pd.to_numeric(wide.get(f"{category}_net_position"), errors="coerce").dropna()
+    ]
+    scale = max(net_values, default=1.0)
     rows = []
     for row in wide.sort_values("divergence_score", ascending=False).itertuples(index=False):
         cells = []
         for category in categories:
-            signal = float(getattr(row, f"{category}_signal", 0) or 0)
-            cells.append(f'''<div class="tri-cell"><strong>{labels[category]}</strong><b>{_fmt_lots(getattr(row, f'{category}_net_position', 0), lang)}</b>
-            <span>Δ {_fmt_lots(getattr(row, f'{category}_net_change', 0), lang)}</span><em>{getattr(row, f'{category}_consistency', 0):+.0%}</em>
-            <small class="signal {signal_label(signal)}">{SIGNAL_COPY[lang][signal_label(signal)]}</small></div>''')
+            signal = float(getattr(row, f"{category}_direction", getattr(row, f"{category}_signal", 0)) or 0)
+            net_position = float(getattr(row, f"{category}_net_position", 0) or 0)
+            cells.append(f'''<div class="tri-cell"><strong>{labels[category]}</strong><b>{_fmt_lots(net_position, lang)}</b>
+            <div class="tri-bar">{_bar(net_position, scale, CATEGORY_COLORS[category])}</div>
+            <span>Δ {_fmt_lots(getattr(row, f'{category}_net_change', float('nan')), lang)}</span><em>{'一致性' if lang=='zh' else 'Consensus'} {_fmt_consistency(getattr(row, f'{category}_consistency', float('nan')))}</em>
+            <small class="signal {direction_label(signal)}">{SIGNAL_COPY[lang][direction_label(signal)]}</small></div>''')
         name = instrument_name(row.symbol, lang, row.name)
         state = STATE_COPY[lang].get(row.three_way_state, row.three_way_state)
         instrument_meta = escape(sector_name(row.sector, lang)) if lang == "zh" else f"{row.symbol} · {escape(sector_name(row.sector, lang))}"
@@ -136,6 +190,7 @@ def change_column(category_rows: pd.DataFrame, category: str, lang: str, limit: 
     sections = []
     for title, metric, absolute in rankings:
         ranked = block.copy()
+        ranked = ranked[ranked[metric].notna()]
         if metric in ("long_change", "short_change"):
             ranked = ranked[ranked[metric].gt(0)]
         order = ranked[metric].abs() if absolute else ranked[metric]
@@ -144,7 +199,7 @@ def change_column(category_rows: pd.DataFrame, category: str, lang: str, limit: 
         lines = []
         for row in ranked.itertuples(index=False):
             value = float(getattr(row, metric))
-            formatted = f"{value:+.0%}" if metric == "consistency" else _fmt_lots(value, lang)
+            formatted = _fmt_consistency(value) if metric == "consistency" else _fmt_lots(value, lang)
             lines.append(
                 f'<div class="change-item"><b>{escape(instrument_name(row.symbol, lang))}</b>'
                 f'{_bar(value, scale, CATEGORY_COLORS[category])}<span>{formatted}</span></div>'
@@ -175,7 +230,9 @@ def executive_read(category_rows: pd.DataFrame, wide: pd.DataFrame, lang: str) -
     lines.append(f"{top_name} 为当前最大分歧品种（{top['divergence_score']:.2f}σ），结构为“{state}”。"
                   if lang == "zh" else f"{top_name} has the widest current divergence ({top['divergence_score']:.2f}σ): {state}.")
     for category in CATEGORY_ORDER:
-        block = category_rows[category_rows["broker_category"].eq(category)]
+        block = category_rows[category_rows["broker_category"].eq(category)].copy()
+        block["net_change"] = pd.to_numeric(block["net_change"], errors="coerce")
+        block = block.dropna(subset=["net_change"])
         if block.empty:
             continue
         leader = block.loc[block["net_change"].abs().idxmax()]

@@ -399,8 +399,10 @@ def fetch_daily(
     return quotes, position_frame, warnings
 
 
-def fetch_position_history(contract: str, exchange: str, start: date, end: date) -> pd.DataFrame:
-    """Actual Top20 history for one fixed contract, without forward-filling gaps."""
+def fetch_position_history_bundle(
+    contract: str, exchange: str, start: date, end: date,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return aggregate and member-level Top20 history for one fixed contract."""
     if exchange == "CFFEX":
         raise IFindError("中金所历史排名采用独立报表，当前仅保存每日更新快照")
     ds = end.strftime("%Y%m%d")
@@ -418,7 +420,7 @@ def fetch_position_history(contract: str, exchange: str, start: date, end: date)
                   "p0": item["p02939_f003"], "type": item["p02939_f001"]}, [8, 9, 10, 12, 13, 14, 23])
     if raw.empty:
         raise IFindError(f"iFinD {contract} 历史排名为空")
-    rows = []
+    rows, member_rows = [], []
     for day, group in raw.groupby("p02940_f023"):
         actual = pd.Timestamp(day).date()
         if not start <= actual <= end:
@@ -429,6 +431,8 @@ def fetch_position_history(contract: str, exchange: str, start: date, end: date)
             positions = normalize_member_ranking(mapped, exchange, actual, contract)
         except IFindError:
             continue
+        positions["source"] = "ifind-member-position-history"
+        member_rows.append(positions)
         long, short = positions.long_position.sum(), positions.short_position.sum()
         rows.append({"trade_date": pd.Timestamp(actual), "exchange": exchange, "symbol": symbol,
                      "contract": contract, "top20_long": long, "top20_short": short,
@@ -436,7 +440,55 @@ def fetch_position_history(contract: str, exchange: str, start: date, end: date)
                      "source": "ifind-position-history"})
     if not rows:
         raise IFindError(f"iFinD {contract} 历史排名无有效记录")
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), pd.concat(member_rows, ignore_index=True)
+
+
+def fetch_position_history(contract: str, exchange: str, start: date, end: date) -> pd.DataFrame:
+    """Actual Top20 aggregate history for one fixed contract."""
+    aggregate, _ = fetch_position_history_bundle(contract, exchange, start, end)
+    return aggregate
+
+
+def fetch_cffex_member_position_history(
+    contract: str, start: date, end: date,
+) -> pd.DataFrame:
+    """Backfill one fixed CFFEX contract without stitching main-contract rolls."""
+    universe = _contract_universe("CFFEX", end.strftime("%Y%m%d"))
+    symbol = symbol_from_contract(contract)
+    expiry = contract[len(symbol):]
+    matches = universe[
+        universe["p02939_f003"].str.startswith(symbol + ";")
+        & universe["p02939_f001"].str.endswith(expiry)
+    ]
+    if len(matches) != 1:
+        raise IFindError(f"iFinD 无法唯一定位中金所历史合约 {contract}")
+    item = matches.iloc[0]
+    identifier, name = str(item["p02939_f003"]), str(item["p02939_f001"])
+    report = "p02424" if symbol in {"T", "TF", "TL", "TS"} else "p02122"
+    fields = [5, 6, 8, 9]
+    rows = []
+    for stamp in pd.bdate_range(start, end):
+        actual = stamp.date()
+        try:
+            previous = _previous_trade_date("CFFEX", actual)
+            current_raw = _report(report, {
+                "sdate": actual.strftime("%Y%m%d"), "edate": actual.strftime("%Y%m%d"),
+                "type": identifier, "p0": name,
+            }, fields)
+            previous_raw = _report(report, {
+                "sdate": previous.strftime("%Y%m%d"), "edate": previous.strftime("%Y%m%d"),
+                "type": identifier, "p0": name,
+            }, fields)
+            frame = normalize_financial_ranking(
+                current_raw, previous_raw, report, actual, contract
+            )
+            frame["source"] = "ifind-member-position-history"
+            rows.append(frame)
+        except IFindError:
+            continue
+    if not rows:
+        raise IFindError(f"iFinD {contract} 中金所固定合约历史排名为空")
+    return pd.concat(rows, ignore_index=True)
 
 
 def _history(codes: list[str], start_date: date, end_date: date) -> list[dict[str, Any]]:

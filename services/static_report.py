@@ -16,6 +16,7 @@ from ui.report_components import (
     change_column,
     executive_read,
     monitor_cards,
+    metric_quick_guide,
     overview_cards,
     panorama_rows,
     section_header,
@@ -30,11 +31,12 @@ REPORT_CSS = """
 .kicker{font:700 .68rem monospace;color:var(--qk);letter-spacing:.14em}.report-head h1{font-size:2.35rem;margin:.45rem 0 .5rem;letter-spacing:-.04em}.report-head p{color:var(--muted);margin:0;font-size:.82rem}.meta{text-align:right;font-size:.7rem;line-height:1.8;color:var(--muted)}.meta b{font:700 .94rem monospace;color:var(--ink)}
 .coverage-grid{display:grid;grid-template-columns:repeat(4,1fr);background:#fff;border:1px solid var(--line)}.coverage-card{padding:16px;border-right:1px solid var(--line)}.coverage-card:last-child{border:0}.coverage-card span{display:block;color:var(--muted);font-size:11px}.coverage-card b{display:block;font:700 22px monospace;margin:8px 0 3px}.coverage-card small{color:var(--muted);font-size:10px;line-height:1.5}
 .section-head{display:grid;grid-template-columns:42px auto 1fr;align-items:end;gap:.65rem;border-bottom:1px solid var(--ink);padding:2.2rem 0 .75rem;margin-bottom:1rem}.section-head>span{font:700 .66rem monospace;color:var(--qk)}.section-head h2{font-size:1.25rem;margin:0}.section-head p{text-align:right;margin:0;color:var(--muted);font-size:.65rem}
+.quick-guide{background:#fff;border:1px solid var(--line);border-left:3px solid var(--qk);padding:12px 15px;margin:0 0 14px;font-size:11px;line-height:1.75;color:#46545d}
 .overview-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));background:#fff;border:1px solid var(--line)}.atlas-card{padding:1rem 1.15rem;border-right:1px solid var(--line);min-height:165px;border-top:3px solid var(--inst)}.atlas-card:last-child{border-right:0}.atlas-card.qian_kun{border-top-color:var(--qk)}.atlas-card.hot_money{border-top-color:var(--hot)}.atlas-card.retail{border-top-color:var(--retail)}.atlas-card.divergence{background:#f7f1df;border-top-color:var(--qk)}
 .atlas-card header{display:flex;align-items:center;gap:.5rem;font-size:.75rem}.shape{width:9px;height:9px;background:var(--inst);border-radius:50%}.qian_kun .shape{background:var(--qk);transform:rotate(45deg);border-radius:0}.hot_money .shape{background:var(--hot);border-radius:1px}.retail .shape{background:var(--retail);clip-path:polygon(50% 0,100% 100%,0 100%)}.atlas-card .big{font:700 1.55rem monospace;margin:1rem 0 .05rem}.atlas-card>small{color:var(--muted);font-size:.62rem}.atlas-card .delta{font:700 .82rem monospace;margin:.7rem 0}.atlas-card .delta em{font:400 .6rem sans-serif;color:var(--muted)}.atlas-card footer{display:grid;grid-template-columns:repeat(4,1fr);gap:.3rem;border-top:1px solid var(--line);padding-top:.55rem}.atlas-card footer span{font-size:.58rem;color:var(--muted)}.atlas-card footer b{display:block;font:700 .67rem monospace;color:var(--ink)}
 .sector-matrix{border:1px solid var(--line);background:#fff}.sector-row{display:grid;border-bottom:1px solid var(--line);min-height:94px}.sector-row:last-child{border:0}.sector-row h3{font-size:.88rem;margin:0;padding:1.1rem;border-right:1px solid var(--line)}.sector-signal{padding:.75rem 1rem;border-right:1px solid var(--line)}.sector-signal:last-child{border:0}.sector-signal strong{font-size:.62rem}.sector-signal>span.signal{float:right}.sector-signal small{display:block;font:600 .59rem monospace;color:var(--muted);margin-top:.25rem}.signal{font-size:.53rem;padding:.16rem .38rem;border-radius:2px;background:#eef1f2;color:#58656e}.signal.strong_long,.signal.long{background:#e1efeb;color:#20685f}.signal.strong_short,.signal.short{background:#f4e5e6;color:#974d56}
 .hbar{height:6px;background:#edf0f1;position:relative;margin:.65rem 0}.hbar i{position:absolute;left:50%;height:100%;border-left:1px solid #929da3}.hbar b{position:absolute;height:100%}.chart-card{background:#fff;border:1px solid var(--line);padding:8px 12px 0;margin-bottom:14px}.chart-note{color:var(--muted);font-size:10px;padding:0 10px 8px}
-.instrument-table{background:#fff;border:1px solid var(--line)}.instrument-head,.instrument-row{display:grid}.instrument-head{background:#edf0f1;border-bottom:1px solid var(--line)}.instrument-head span{padding:.55rem .8rem;font-size:.58rem;color:var(--muted)}.instrument-row{border-bottom:1px solid var(--line);min-height:88px}.instrument-row:last-child{border:0}.instrument-id,.tri-cell,.div-score{padding:.75rem .8rem;border-right:1px solid var(--line)}.instrument-id b{display:block;font-size:.78rem}.instrument-id span,.instrument-id small{display:block;color:var(--muted);font-size:.55rem;margin-top:.15rem}.tri-cell{display:grid;grid-template-columns:1fr auto;gap:.2rem}.tri-cell strong{font-size:.55rem;color:var(--muted)}.tri-cell b{font:700 .78rem monospace}.tri-cell span,.tri-cell em{font:500 .58rem monospace;color:var(--muted)}.tri-cell small{grid-column:1/3;width:max-content}.div-score{border:0}.div-score b{font:700 1rem monospace}.div-score span{display:block;font-size:.58rem;color:var(--muted);margin-top:.35rem}
+.instrument-table{background:#fff;border:1px solid var(--line)}.instrument-head,.instrument-row{display:grid}.instrument-head{background:#edf0f1;border-bottom:1px solid var(--line)}.instrument-head span{padding:.55rem .8rem;font-size:.58rem;color:var(--muted)}.instrument-row{border-bottom:1px solid var(--line);min-height:88px}.instrument-row:last-child{border:0}.instrument-id,.tri-cell,.div-score{padding:.75rem .8rem;border-right:1px solid var(--line)}.instrument-id b{display:block;font-size:.78rem}.instrument-id span,.instrument-id small{display:block;color:var(--muted);font-size:.55rem;margin-top:.15rem}.tri-cell{display:grid;grid-template-columns:1fr auto;gap:.2rem}.tri-cell strong{font-size:.55rem;color:var(--muted)}.tri-cell b{font:700 .78rem monospace}.tri-cell span,.tri-cell em{font:500 .58rem monospace;color:var(--muted)}.tri-cell .tri-bar{grid-column:1/3}.tri-cell .tri-bar .hbar{margin:.22rem 0 .32rem}.tri-cell small{grid-column:1/3;width:max-content}.div-score{border:0}.div-score b{font:700 1rem monospace}.div-score span{display:block;font-size:.58rem;color:var(--muted);margin-top:.35rem}
 .change-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}.change-panel{background:#fff;padding:1rem;border-top:3px solid var(--inst)}.change-panel.qian_kun{border-top-color:var(--qk)}.change-panel.hot_money{border-top-color:var(--hot)}.change-panel.retail{border-top-color:var(--retail)}.change-panel h3{font-size:.82rem;margin:0 0 .8rem}.change-rank{border-top:1px solid var(--line);padding:.65rem 0 .25rem}.change-rank h4{font-size:.58rem;color:var(--muted);font-weight:600;margin:0 0 .35rem}.change-rank>small{font-size:.6rem;color:var(--muted)}.change-item{display:grid;grid-template-columns:minmax(76px,28%) minmax(0,1fr) 65px;gap:.5rem;align-items:center;margin:.6rem 0}.change-item b{font-size:.72rem;line-height:1.4;overflow-wrap:break-word}.change-item span{text-align:right;font:.62rem monospace}
 .monitor-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}.monitor-card{background:#fff;padding:1rem;min-height:85px}.monitor-card span,.monitor-card small{display:block;color:var(--muted);font-size:.6rem}.monitor-card b{display:block;font:.75rem monospace;margin:.65rem 0}.executive-box{background:#f7f1df;border-left:4px solid var(--qk);padding:1rem 1.25rem}.executive-box p{font-size:.75rem;line-height:1.65;margin:.4rem 0}
 .status-table{width:100%;border-collapse:collapse;background:#fff;font-size:11px}.status-table th,.status-table td{border:1px solid var(--line);padding:8px;text-align:left}.status-table th{background:#edf0f1;color:var(--muted)}.caveat{font-size:.64rem;color:var(--muted);border-top:1px solid var(--line);padding-top:.8rem;margin-top:1rem;line-height:1.7}.footer{margin-top:28px;text-align:center;color:var(--muted);font-size:10px}
@@ -151,42 +153,35 @@ def _divergence_svg(wide: pd.DataFrame, lang: str) -> str:
     x_domain = _domain(wide["institution_signal"], symmetric=True)
     y_domain = _domain(wide["retail_signal"], symmetric=True)
     left, right, top, bottom = 88.0, 1160.0, 58.0, 430.0
-    label_symbols = set(wide.nlargest(min(8, len(wide)), "divergence_score")["symbol"])
+    gaps = (wide["institution_signal"] - wide["retail_signal"]).abs()
+    label_symbols = set(wide.assign(pair_gap=gaps).nlargest(min(8, len(wide)), "pair_gap")["symbol"])
     points = []
     offsets = [(11, -10), (11, 18), (-11, -10), (-11, 18)]
     for index, row in enumerate(wide.itertuples(index=False)):
         x = _project(row.institution_signal, *x_domain, left, right)
         y = _project(row.retail_signal, y_domain[1], y_domain[0], top, bottom)
-        foreign = float(row.qian_kun_signal)
-        color = "#29756c" if foreign > 0.25 else "#a85d65" if foreign < -0.25 else "#b8b39f"
-        size = 7 + min(float(row.divergence_score), 3.0) * 4
+        pair_gap = abs(float(row.institution_signal) - float(row.retail_signal))
+        size = 7 + min(pair_gap, 4.0) * 4
         name = instrument_name(row.symbol, lang)
         tooltip = (
-            f"{name}｜机构 {row.institution_signal:+.2f}｜散户代理 {row.retail_signal:+.2f}｜外资 {foreign:+.2f}｜分歧 {row.divergence_score:.2f}σ"
+            f"{name}｜机构 {row.institution_signal:+.2f}｜散户代理 {row.retail_signal:+.2f}｜两方分歧 {pair_gap:.2f} Z分"
             if lang == "zh" else
-            f"{name} | Institution {row.institution_signal:+.2f} | Retail proxy {row.retail_signal:+.2f} | Foreign {foreign:+.2f} | Divergence {row.divergence_score:.2f}σ"
+            f"{name} | Institution {row.institution_signal:+.2f} | Retail proxy {row.retail_signal:+.2f} | Two-party gap {pair_gap:.2f} Z pts"
         )
-        marker = _svg_marker("qian_kun", x, y, size, color)
+        marker = _svg_marker("institution", x, y, size, "#315f78")
         label = ""
         if row.symbol in label_symbols:
             dx, dy = offsets[index % len(offsets)]
             anchor = "start" if dx > 0 else "end"
             label = f'<text x="{x+dx:.1f}" y="{y+dy:.1f}" text-anchor="{anchor}" font-size="10" fill="#19242c">{escape(name)}</text>'
         points.append(f"<g><title>{escape(tooltip)}</title>{marker}{label}</g>")
-    legend = (
-        '<circle cx="95" cy="25" r="6" fill="#29756c"/><text x="108" y="29" font-size="11">外资偏多</text>'
-        '<circle cx="200" cy="25" r="6" fill="#a85d65"/><text x="213" y="29" font-size="11">外资偏空</text>'
-        if lang == "zh" else
-        '<circle cx="95" cy="25" r="6" fill="#29756c"/><text x="108" y="29" font-size="11">Foreign long</text>'
-        '<circle cx="220" cy="25" r="6" fill="#a85d65"/><text x="233" y="29" font-size="11">Foreign short</text>'
-    )
     grid = _svg_grid(
         x_domain, y_domain,
         "机构信号" if lang == "zh" else "Institution signal",
         "散户代理信号" if lang == "zh" else "Retail proxy signal",
     )
-    aria = "核心三方分歧地图" if lang == "zh" else "Core three-way divergence map"
-    return f'<svg viewBox="0 0 1200 500" role="img" aria-label="{aria}" style="width:100%;height:auto">{grid}{legend}{"".join(points)}</svg>'
+    aria = "机构与散户代理分歧地图" if lang == "zh" else "Institution and retail-proxy divergence map"
+    return f'<svg viewBox="0 0 1200 500" role="img" aria-label="{aria}" style="width:100%;height:auto">{grid}{"".join(points)}</svg>'
 
 
 def _coverage_table(coverage: pd.DataFrame, lang: str) -> str:
@@ -284,12 +279,14 @@ def build_static_daily_report(
 {section_header('01', cp(lang, 'overview'), cp(lang, 'overview_note'))}
 {overview_cards(category_rows, wide, lang, categories)}
 {section_header('02', cp(lang, 'sector'), cp(lang, 'sector_note'))}
+{metric_quick_guide(lang, linked=False)}
 {sector_matrix(category_rows, lang, categories)}
 {section_header('03', cp(lang, 'map'), cp(lang, 'map_note'))}
 <div class="chart-card">{consensus_html}<div class="chart-note">{'品种较多时，每个板块选取两项代表品种；悬浮数据点可查看完整数值。' if lang == 'zh' else 'For larger universes, two representative instruments are selected per sector; hover for exact values.'}</div></div>
 {section_header('03B', cp(lang, 'div_map'), cp(lang, 'div_note'))}
 <div class="chart-card">{divergence_html}</div>
 {section_header('04', cp(lang, 'panorama'), core_note)}
+{metric_quick_guide(lang, linked=False)}
 {panorama_rows(core_wide, lang, categories)}
 {section_header('05', cp(lang, 'changes'), cp(lang, 'changes_note'))}
 <div class="change-grid">{''.join(change_column(category_rows, category, lang) for category in categories)}</div>
