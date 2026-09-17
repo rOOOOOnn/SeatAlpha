@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -33,13 +36,14 @@ from settings.broker_classification import (
     SEAT_RESEARCH_NOTES,
 )
 from settings.signal_thresholds import SIGNAL_THRESHOLDS
+from ui import futures_views_components
 from ui.copy import cp
 from ui.report_components import (
     CATEGORY_COLORS,
     change_column,
     executive_read,
-    monitor_cards,
     metric_quick_guide,
+    monitor_cards,
     overview_cards,
     panorama_rows,
     section_header,
@@ -47,6 +51,12 @@ from ui.report_components import (
 )
 
 st.set_page_config(page_title="SeatAlpha", page_icon="◇", layout="wide", initial_sidebar_state="expanded")
+
+# Streamlit reruns app.py inside the same Python process. A refreshed browser page
+# does not evict imported modules from sys.modules, so reload this small UI helper
+# before using newly added functions during local development.
+importlib.invalidate_caches()
+futures_views_components = importlib.reload(futures_views_components)
 
 EXCHANGE_NAMES_ZH = {
     "SHFE": "上期所及上期能源",
@@ -195,24 +205,10 @@ except (FileNotFoundError, KeyError, TypeError):
 external_view_defaults = load_futures_view_settings(ROOT, external_view_values)
 if "external_views_enabled" not in st.session_state:
     st.session_state["external_views_enabled"] = external_view_defaults.enabled
-external_view_settings = load_futures_view_settings(
-    ROOT,
-    {**external_view_values, "enabled": st.session_state["external_views_enabled"]},
+external_view_settings = replace(
+    external_view_defaults,
+    enabled=st.session_state["external_views_enabled"],
 )
-
-if (
-    external_view_settings.enabled
-    and external_view_settings.project_available
-    and external_view_settings.auto_update
-):
-    external_target = latest_weekday()
-    refresh_key = f"external_views_refresh_{external_target.isoformat()}"
-    if not st.session_state.get(refresh_key):
-        with st.spinner("正在检查国内大型期货公司观点…"):
-            st.session_state["external_views_update_result"] = update_futures_views(
-                external_view_settings, external_target
-            )
-        st.session_state[refresh_key] = True
 
 lang = "en" if st.session_state.get("language_choice") == "English" else "zh"
 commodity_pages = [
@@ -379,6 +375,10 @@ def render_futures_view_page():
         if update_result.output:
             with st.expander("更新日志" if lang == "zh" else "Update log"):
                 st.code(update_result.output)
+    elif update_result and update_result.status == "cooldown":
+        st.warning(update_result.message)
+    elif update_result and update_result.status == "running":
+        st.info(update_result.message)
     elif update_result and update_result.status == "updated":
         st.success(update_result.message)
 
@@ -417,23 +417,22 @@ def render_futures_view_page():
     )
     try:
         bundle = load_futures_view_bundle(external_view_settings, selected_view_date)
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, ValueError, TypeError) as exc:
         st.error(str(exc))
         return
 
-    company_names = ["广发期货", "中信期货", "国泰海通期货", "东证期货"]
-    summary_rows = []
-    for row in bundle.summary.get("rows", []):
-        summary_row = {"板块": row.get("sector")}
-        summary_row.update({company: row.get("scores", {}).get(company) for company in company_names})
-        summary_row.update({
-            "综合得分": row.get("average"),
-            "分歧": row.get("divergence"),
-            "一致性": row.get("consistency"),
-            "综合判断": row.get("judgement"),
-        })
-        summary_rows.append(summary_row)
-    summary_frame = pd.DataFrame(summary_rows)
+    view_rows = bundle.summary.get("rows", [])
+    sector_frame = futures_views_components.summary_frame(view_rows)
+    summary_source_rows = [
+        {
+            "板块": row.get("sector"),
+            "期货公司": company,
+            "观点来源日期": (row.get("dates") or {}).get(company),
+            "历史沿用": bool((row.get("carried") or {}).get(company)),
+        }
+        for row in view_rows
+        for company in futures_views_components.COMPANIES
+    ]
     outlook_frame = pd.DataFrame(bundle.outlook)
     daily_frame = pd.DataFrame(bundle.daily_records)
     history_frame = pd.DataFrame(bundle.history_records)
@@ -471,31 +470,119 @@ def render_futures_view_page():
         ]
     )
     with tab_summary:
-        st.dataframe(summary_frame, hide_index=True, width="stretch")
+        if sector_frame.empty:
+            st.info("暂无板块评分。" if lang == "zh" else "No sector scores available.")
+        else:
+            st.markdown(
+                f"<div style='background:#24486a;color:#fff;padding:.65rem 1rem;"
+                f"font-weight:700;border-radius:4px'>"
+                f"{'期货公司板块观点评分矩阵' if lang == 'zh' else 'Futures-company sector score matrix'}"
+                f" | {selected_view_date.isoformat()}</div>",
+                unsafe_allow_html=True,
+            )
+            st.dataframe(
+                futures_views_components.styled_summary(sector_frame, view_rows),
+                hide_index=True, width="stretch",
+            )
+            st.caption(
+                "浅绿为偏多、浅橙为偏空、浅黄为中性；黄色历史沿用，灰色无可用观点。粉色表示分歧较大。"
+                if lang == "zh" else
+                "Green is bullish, orange bearish, pale yellow neutral; gold marks carried views, gray unavailable values, pink high dispersion."
+            )
+            figure = futures_views_components.views_divergence_figure(
+                view_rows, selected_view_date, language=lang
+            )
+            if figure.data:
+                st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+                st.caption(
+                    "灰点：机构评分（空心为历史沿用）；蓝色菱形：板块平均；灰线：最低至最高评分。图表展示五大板块，碳酸锂和多晶硅保留在上方汇总表。"
+                    if lang == "zh" else
+                    "Gray dots: company scores (open circles are carried forward); blue diamonds: sector means; gray lines: min–max range. The chart shows five major sectors; lithium carbonate and polysilicon remain in the table."
+                )
+        with st.expander("各公司评分来源日期" if lang == "zh" else "Score source dates"):
+            st.dataframe(pd.DataFrame(summary_source_rows), hide_index=True, width="stretch")
     with tab_outlook:
         if outlook_frame.empty:
-            st.info("暂无中期展望。" if lang == "zh" else "No medium-term outlook is available.")
+            st.info(
+                (
+                    "该历史日期尚未生成中期展望，其他观点数据仍可查看。"
+                    if not bundle.outlook_available else "该日期没有中期展望数据。"
+                ) if lang == "zh" else (
+                    "This historical date predates the medium-term outlook output; other views remain available."
+                    if not bundle.outlook_available else "No medium-term outlook data is available for this date."
+                )
+            )
         else:
-            outlook_columns = [
-                "commodity", "sector", "direction", "score", "last_update", "age_days",
-                "freshness", "sources", "supply", "demand", "inventory", "core_logic",
-                "medium_outlook",
-            ]
             labels = {
                 "commodity": "品种", "sector": "板块", "direction": "方向", "score": "得分",
-                "last_update": "最近更新", "age_days": "数据年龄", "freshness": "新鲜度",
-                "sources": "来源机构", "supply": "供给", "demand": "需求", "inventory": "库存",
+                "last_update": "更新时间", "age_days": "数据年龄", "freshness": "新鲜度",
+                "sources": "观点来源", "supply": "供给", "demand": "需求", "inventory": "库存",
                 "core_logic": "核心逻辑", "medium_outlook": "中期展望",
             }
+            medium_frame = futures_views_components.medium_outlook_frame(bundle.outlook)
+            st.markdown(
+                f"<div style='background:#b71926;color:#fff;padding:.65rem 1rem;"
+                f"font-weight:700;border-radius:4px'>"
+                f"{'中期展望' if lang == 'zh' else 'Medium-term outlook'}"
+                f" | {selected_view_date.isoformat()}</div>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "品种 ｜ 核心变量（供给、需求、库存、核心逻辑） ｜ 中期展望 ｜ 时效与来源"
+                if lang == "zh" else
+                "Product | Key drivers (supply, demand, inventory, core logic) | Medium-term outlook | Freshness and sources"
+            )
             st.dataframe(
-                outlook_frame[[column for column in outlook_columns if column in outlook_frame]].rename(columns=labels),
+                futures_views_components.styled_medium_outlook(
+                    medium_frame, bundle.outlook, selected_view_date
+                ),
                 hide_index=True,
                 width="stretch",
-                height=620,
+                height=700,
+                row_height=76,
+                column_config={
+                    "品种": st.column_config.TextColumn(width="small"),
+                    "供给": st.column_config.TextColumn(width="large"),
+                    "需求": st.column_config.TextColumn(width="large"),
+                    "库存": st.column_config.TextColumn(width="large"),
+                    "核心逻辑": st.column_config.TextColumn(width="large"),
+                    "中期展望": st.column_config.TextColumn(width="large"),
+                    "方向": st.column_config.TextColumn(width="small"),
+                    "更新时间": st.column_config.TextColumn(width="small"),
+                    "数据年龄": st.column_config.NumberColumn(width="small", format="%d"),
+                    "观点来源": st.column_config.TextColumn(width="large"),
+                },
             )
+            st.caption(
+                "方向：绿色偏多、红色偏空、黄色中性。变量与数据年龄：黄色为 4–7 天、橙色为 8–14 天、红色为超过 14 天；无底色为 3 天以内。"
+                if lang == "zh" else
+                "Direction: green bullish, red bearish, yellow neutral. Source age: yellow 4–7 days, orange 8–14 days, red over 14 days; no fill at 3 days or less."
+            )
+            selected_outlook = st.selectbox(
+                "查看字段来源" if lang == "zh" else "Field provenance",
+                outlook_frame["commodity"].dropna().unique().tolist(),
+                key="futures_view_outlook_commodity",
+            )
+            item = next(
+                (row for row in bundle.outlook if row.get("commodity") == selected_outlook),
+                None,
+            )
+            if item:
+                source_rows = [
+                    {
+                        "字段": labels.get(field_name, field_name),
+                        "来源机构": source.get("company", ""),
+                        "观点日期": source.get("view_date", ""),
+                        "来源标题": source.get("source_title", ""),
+                        "来源URL": source.get("source_url", ""),
+                    }
+                    for field_name, source in (item.get("field_sources") or {}).items()
+                ]
+                if source_rows:
+                    st.dataframe(pd.DataFrame(source_rows), hide_index=True, width="stretch")
     with tab_daily:
         if daily_frame.empty:
-            st.info("数据库中没有当日新增观点。" if lang == "zh" else "No new daily views are stored in the database.")
+            st.info("当日没有新增观点。" if lang == "zh" else "No new daily views are available.")
         else:
             sectors = sorted(daily_frame["sector"].dropna().unique())
             selected_daily_sectors = st.multiselect(
@@ -507,7 +594,12 @@ def render_futures_view_page():
             filtered_daily = daily_frame[daily_frame["sector"].isin(selected_daily_sectors)]
             st.dataframe(filtered_daily, hide_index=True, width="stretch", height=620)
     with tab_history:
-        if history_frame.empty:
+        if bundle.history_error:
+            st.warning(
+                f"无法读取观点历史库：{bundle.history_error}"
+                if lang == "zh" else f"Could not read the views history database: {bundle.history_error}"
+            )
+        elif history_frame.empty:
             st.info("观点历史库为空。" if lang == "zh" else "The views history database is empty.")
         else:
             companies = sorted(history_frame["company"].dropna().unique())
@@ -524,6 +616,8 @@ def render_futures_view_page():
             )
             st.dataframe(filtered_history, hide_index=True, width="stretch", height=650)
     with tab_quality:
+        if bundle.company_status:
+            st.dataframe(pd.DataFrame(bundle.company_status), hide_index=True, width="stretch")
         quality_rows = [
             {"项目": key, "结果": str(value)}
             for key, value in bundle.quality.items()
@@ -541,6 +635,16 @@ def render_futures_view_page():
                 hide_index=True,
                 width="stretch",
             )
+        coverage_rows = [
+            {
+                "公司代码": company,
+                "明确候选": details.get("explicit_candidates"),
+                "遗漏": "；".join(map(str, details.get("missing") or [])) or "无",
+            }
+            for company, details in (bundle.quality.get("coverage") or {}).items()
+        ]
+        if coverage_rows:
+            st.dataframe(pd.DataFrame(coverage_rows), hide_index=True, width="stretch")
         for label, key in (("问题", "issues"), ("警告", "warnings")):
             values = bundle.quality.get(key) or []
             if values:
@@ -1118,5 +1222,19 @@ def render_dashboard(page: str = "overview"):
     st.markdown(f'<div class="caveat">{cp(lang,"data_limit")}</div>', unsafe_allow_html=True)
     render_metric_formulas(change_period, lang)
 
+
+if (
+    active_route == "commodity-company-views"
+    and external_view_settings.enabled
+    and external_view_settings.auto_update
+):
+    external_target = latest_weekday()
+    refresh_key = f"external_views_refresh_{external_target.isoformat()}"
+    if not st.session_state.get(refresh_key):
+        with st.spinner("正在检查国内大型期货公司观点…"):
+            st.session_state["external_views_update_result"] = update_futures_views(
+                external_view_settings, external_target
+            )
+        st.session_state[refresh_key] = True
 
 navigation.run()

@@ -67,9 +67,9 @@ llm_backend = "api"
 timeout_seconds = 3600
 ```
 
-启用自动更新后，SeatAlpha 按最新应发布交易日检查 `quality_report_YYYYMMDD.json`。数据已通过质量门禁时不重复运行；缺失时调用对方项目的 `run_all.ps1`，由其完成采集、分类、数据库同步、Excel 生成和严格质量检查。进程锁会阻止多个 Streamlit 会话重复更新，失败也不会中断 SeatAlpha 原有行情与席位页面。自动更新可能调用对方项目已经配置的模型/API；可设置 `auto_update = false` 后只使用页面上的手动更新按钮。
+进入“国内大型期货公司观点”页面时，SeatAlpha 按最新应发布交易日检查 `quality_report_YYYYMMDD.json` 及最终产物。数据已通过质量门禁时不重复运行；缺失时调用对方项目的 `run_all.ps1`，由其完成采集、分类、数据库同步、Excel 生成和严格质量检查。进程锁会阻止多个 Streamlit 会话重复更新；失败后自动重试有 30 分钟冷却时间，仍可手动重试。更新失败不会中断 SeatAlpha 原有行情与席位页面。自动更新可能调用对方项目已经配置的模型/API；可设置 `auto_update = false` 后只使用页面上的手动更新按钮。
 
-展示时，适配层只读取已经校验的最终产物和 `data/view_database.sqlite3`。网页还原 Excel 的“期货观点汇总”“中期展望”“当日观点明细”“运行与数据质量”，另提供 SQLite 全量历史观点页和原始 Excel 下载入口。程序不会读取或展示 `secrets/`、Prompt、模型原始回复或爬虫临时文件。
+展示时，适配层只读取已经校验的最终产物和 `data/view_database.sqlite3`。网页还原 Excel 的“期货观点汇总”“中期展望”“当日观点明细”“运行与数据质量”；板块汇总含评分方向、历史沿用与分歧程度的颜色提示，以及五大板块的“机构观点与分歧”图（机构点、平均菱形、最高/最低区间）。碳酸锂和多晶硅仍列在评分表中。“中期展望”按 Excel 的 10 列顺序展示，并用颜色区分方向得分及各字段观点的新旧程度。页面显示评分及字段的来源日期，另提供 SQLite 全量历史观点页和原始 Excel 下载入口。部分早期输出没有“中期展望”工作表所需的当前快照，此时该区显示明确提示，其余内容照常展示。程序不会读取或展示 `secrets/`、Prompt、模型原始回复或爬虫临时文件。
 
 上述配置也可使用环境变量覆盖：`SEATALPHA_FUTURES_VIEW_ENABLED`、`SEATALPHA_FUTURES_VIEW_ROOT`、`SEATALPHA_FUTURES_VIEW_AUTO_UPDATE`、`SEATALPHA_FUTURES_VIEW_LLM_BACKEND` 和 `SEATALPHA_FUTURES_VIEW_TIMEOUT_SECONDS`。
 
@@ -92,6 +92,8 @@ GitHub 仓库只提交适配器、配置示例、页面代码和测试，不提�
 四类席位均是对交易所公布的客户持仓席位所做的研究分类，完整名单在状态页和 `settings/broker_classification.py` 中公开展示。“游资风格”是用户指定的会员席位组合，“散户代理席位”不是交易所直接披露的个人账户数据；所有类别都不代表对应期货公司的自营观点，未能可靠判断的会员保留为“未分类”。
 
 ### 开发与测试
+
+开发中刷新观点页面时，应用会重新加载观点 UI 组件，避免 Streamlit 沿用旧模块引发新增函数的 `ImportError`；不会因此清空行情数据缓存或重新抓取行情。若浏览器已停留在旧报错页面，部署新代码后先重启一次 Streamlit 服务。
 
 ```powershell
 conda run -n seatalpha pytest -q
@@ -165,9 +167,9 @@ llm_backend = "api"
 timeout_seconds = 3600
 ```
 
-With automatic updates enabled, SeatAlpha checks the latest publishable trading day's `quality_report_YYYYMMDD.json`. It skips dates that already passed the quality gate. Missing dates invoke the source project's `run_all.ps1`, which owns collection, classification, database synchronization, workbook generation, and strict validation. A process lock prevents duplicate runs from concurrent Streamlit sessions, and failures do not interrupt the existing dashboard. Automatic updates may use the model/API already configured in the source project; set `auto_update = false` to update only through the page button.
+When the company-views page is opened, SeatAlpha checks the latest publishable trading day's `quality_report_YYYYMMDD.json` and final outputs. It skips dates that already passed the quality gate. Missing dates invoke the source project's `run_all.ps1`, which owns collection, classification, database synchronization, workbook generation, and strict validation. A process lock prevents duplicate runs from concurrent Streamlit sessions; failed automatic attempts have a 30-minute cooldown, while manual retry remains available. Failures do not interrupt the existing dashboard. Automatic updates may use the model/API already configured in the source project; set `auto_update = false` to update only through the page button.
 
-For display, the adapter reads only validated final outputs and `data/view_database.sqlite3`. It reconstructs the workbook's sector summary, medium-term outlook, daily-detail, and run-quality views, adds the full SQLite history, and retains a download link to the original workbook. SeatAlpha never reads or displays the other project's secrets, prompts, raw model responses, or crawler scratch files.
+For display, the adapter reads only validated final outputs and `data/view_database.sqlite3`. It reconstructs the workbook's sector summary, medium-term outlook, daily-detail, and run-quality views. The sector summary uses color to distinguish score direction, carried-forward views, and dispersion, and includes the five-sector institution-views-and-dispersion chart (company dots, mean diamonds, min–max spans). Lithium carbonate and polysilicon remain in the score table. The medium-term outlook follows the workbook's ten-column order and colors direction scores and field freshness. The page also shows score and field provenance, adds the full SQLite history, and retains a download link to the original workbook. Some earlier outputs predate the medium-term outlook snapshot; those dates show an explicit notice while the other views remain available. SeatAlpha never reads or displays the other project's secrets, prompts, raw model responses, or crawler scratch files.
 
 Environment overrides are also supported: `SEATALPHA_FUTURES_VIEW_ENABLED`, `SEATALPHA_FUTURES_VIEW_ROOT`, `SEATALPHA_FUTURES_VIEW_AUTO_UPDATE`, `SEATALPHA_FUTURES_VIEW_LLM_BACKEND`, and `SEATALPHA_FUTURES_VIEW_TIMEOUT_SECONDS`.
 
@@ -190,6 +192,8 @@ The catalog covers 90 futures products across SHFE/INE, DCE, CZCE, GFEX, and CFF
 All four groups are research classifications of published client-position seats. The complete configured and currently observed member lists are visible on the Data Status page and maintained in `settings/broker_classification.py`. “Active-trading style” is a user-defined member basket; “retail proxy” is not exchange-disclosed individual-account data, and no category represents a futures company's proprietary house view. Uncertain members remain unclassified.
 
 ### Development and Tests
+
+Refreshing the views page during development reloads its UI component module, preventing `ImportError` from a stale Streamlit process after new functions are added. This does not clear the market-data cache or refetch prices. If the browser is already showing the old error, restart Streamlit once after deploying the new code.
 
 ```powershell
 conda run -n seatalpha pytest -q

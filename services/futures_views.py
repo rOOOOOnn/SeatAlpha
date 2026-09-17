@@ -59,7 +59,10 @@ class FuturesViewBundle:
     daily_records: list[dict[str, Any]]
     history_records: list[dict[str, Any]]
     quality: dict[str, Any]
+    company_status: list[dict[str, Any]]
     excel_path: Path | None
+    outlook_available: bool
+    history_error: str | None
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -85,7 +88,8 @@ def load_futures_view_settings(
     environ: Mapping[str, str] | None = None,
 ) -> FuturesViewSettings:
     values = values or {}
-    environ = environ or os.environ
+    if environ is None:
+        environ = os.environ
     root_value = environ.get("SEATALPHA_FUTURES_VIEW_ROOT") or values.get("root")
     root = Path(str(root_value)).expanduser() if root_value else discover_default_root(seatalpha_root)
     enabled_value = environ.get("SEATALPHA_FUTURES_VIEW_ENABLED", values.get("enabled"))
@@ -122,7 +126,14 @@ def quality_passed(settings: FuturesViewSettings, target: date) -> bool:
         report = _read_json(path)
     except (OSError, json.JSONDecodeError, TypeError):
         return False
-    return report.get("target_date") == target.isoformat() and report.get("passed") is True
+    output_dir = settings.output_root / stamp
+    return (
+        report.get("target_date") == target.isoformat()
+        and report.get("passed") is True
+        and (output_dir / f"summary_{stamp}.json").is_file()
+        and (output_dir / f"期货公司观点汇总_{stamp}.xlsx").is_file()
+        and all((output_dir / f"{company}.json").is_file() for company in COMPANY_FILES)
+    )
 
 
 def available_view_dates(settings: FuturesViewSettings) -> list[date]:
@@ -146,6 +157,26 @@ def available_view_dates(settings: FuturesViewSettings) -> list[date]:
 def _lock_path(settings: FuturesViewSettings) -> Path:
     digest = hashlib.sha256(str(settings.root).encode("utf-8")).hexdigest()[:16]
     return Path(tempfile.gettempdir()) / f"seatalpha-futures-view-{digest}.lock"
+
+
+def _failure_path(settings: FuturesViewSettings, target: date) -> Path:
+    return _lock_path(settings).with_name(
+        f"{_lock_path(settings).stem}-{target:%Y%m%d}.failure.json"
+    )
+
+
+def _recent_failure(settings: FuturesViewSettings, target: date, cooldown_seconds: int = 1800) -> bool:
+    path = _failure_path(settings, target)
+    try:
+        return time.time() - float(_read_json(path)["at"]) < cooldown_seconds
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def _record_failure(settings: FuturesViewSettings, target: date) -> None:
+    _failure_path(settings, target).write_text(
+        json.dumps({"at": time.time()}), encoding="utf-8"
+    )
 
 
 def _acquire_lock(path: Path, stale_seconds: int = 4 * 60 * 60) -> int | None:
@@ -172,6 +203,10 @@ def update_futures_views(
         return FuturesViewUpdateResult("unavailable", target, f"项目目录无效：{settings.root}")
     if quality_passed(settings, target) and not force:
         return FuturesViewUpdateResult("current", target, "目标交易日数据已通过质量门禁。")
+    if not force and _recent_failure(settings, target):
+        return FuturesViewUpdateResult(
+            "cooldown", target, "近期更新失败；30 分钟内不会自动重复调用，可在观点页手动重试。"
+        )
 
     lock_path = _lock_path(settings)
     descriptor = _acquire_lock(lock_path)
@@ -179,17 +214,21 @@ def update_futures_views(
         return FuturesViewUpdateResult("running", target, "另一个 SeatAlpha 会话正在更新观点。")
     os.close(descriptor)
     try:
+        stamp = target.strftime("%Y%m%d")
+        quality_path = settings.output_root / stamp / f"quality_report_{stamp}.json"
+        previous_quality_mtime = quality_path.stat().st_mtime_ns if quality_path.exists() else None
+        runner_path = str(settings.runner_path).replace("'", "''")
+        ps_command = (
+            f"& {{ & '{runner_path}' -Date '{target.isoformat()}' "
+            f"-LlmBackend '{settings.llm_backend}'; exit $LASTEXITCODE }}"
+        )
         command = [
             "powershell.exe",
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
-            "-File",
-            str(settings.runner_path),
-            "-Date",
-            target.isoformat(),
-            "-LlmBackend",
-            settings.llm_backend,
+            "-Command",
+            ps_command,
         ]
         completed = runner(
             command,
@@ -204,18 +243,28 @@ def update_futures_views(
         combined = "\n".join(value for value in (completed.stdout, completed.stderr) if value)
         tail = combined[-8000:]
         if completed.returncode != 0:
+            _record_failure(settings, target)
             return FuturesViewUpdateResult(
                 "failed", target, f"观点更新失败，退出码 {completed.returncode}。", tail
             )
-        if not quality_passed(settings, target):
+        current_quality_mtime = quality_path.stat().st_mtime_ns if quality_path.exists() else None
+        if (
+            not quality_passed(settings, target)
+            or current_quality_mtime is None
+            or current_quality_mtime == previous_quality_mtime
+        ):
+            _record_failure(settings, target)
             return FuturesViewUpdateResult(
-                "failed", target, "更新命令结束，但目标日期未通过质量门禁。", tail
+                "failed", target, "更新命令结束，但未生成新的合格目标日期结果。", tail
             )
+        _failure_path(settings, target).unlink(missing_ok=True)
         return FuturesViewUpdateResult("updated", target, "观点已更新并通过质量门禁。", tail)
     except subprocess.TimeoutExpired as exc:
+        _record_failure(settings, target)
         output = "\n".join(str(value or "") for value in (exc.stdout, exc.stderr))[-8000:]
         return FuturesViewUpdateResult("failed", target, "观点更新超时。", output)
     except OSError as exc:
+        _record_failure(settings, target)
         return FuturesViewUpdateResult("failed", target, f"无法启动观点项目：{exc}")
     finally:
         lock_path.unlink(missing_ok=True)
@@ -234,8 +283,9 @@ def _connect_read_only(path: Path) -> sqlite3.Connection:
         except UnboundLocalError:
             pass
         # A restricted host may deny SQLite's read-only shared-memory sidecar.
-        # The pipeline is never writing during a completed quality-gated read,
-        # so an immutable fallback remains safe and does not touch the source.
+        # Immutable mode ignores WAL content, so do not use it while WAL exists.
+        if Path(f"{path}-wal").exists():
+            raise
         connection = sqlite3.connect(f"{uri}?mode=ro&immutable=1", uri=True)
     connection.row_factory = sqlite3.Row
     return connection
@@ -267,13 +317,29 @@ def load_futures_view_bundle(settings: FuturesViewSettings, target: date) -> Fut
     output_dir = settings.output_root / stamp
     summary = _read_json(output_dir / f"summary_{stamp}.json")
     quality = _read_json(output_dir / f"quality_report_{stamp}.json")
-    outlook_payload = _read_json(output_dir / f"current_view_{stamp}.json")
+    outlook_path = output_dir / f"current_view_{stamp}.json"
+    outlook_payload = _read_json(outlook_path) if outlook_path.is_file() else {"views": []}
     daily_records: list[dict[str, Any]] = []
+    company_status: list[dict[str, Any]] = []
     for company_file in COMPANY_FILES:
         path = output_dir / f"{company_file}.json"
         if path.is_file():
-            daily_records.extend(_read_json(path).get("records", []))
-    history_records = _database_history(settings, target)
+            payload = _read_json(path)
+            records = payload.get("records", [])
+            daily_records.extend(records)
+            company_status.append({
+                "期货公司": payload.get("company", company_file),
+                "处理状态": payload.get("processing_status", ""),
+                "采集状态": (payload.get("crawl") or {}).get("status", ""),
+                "有效观点数": len(records),
+                "拒绝记录数": len(payload.get("rejected") or []),
+            })
+    try:
+        history_records = _database_history(settings, target)
+        history_error = None
+    except (OSError, sqlite3.DatabaseError) as exc:
+        history_records = []
+        history_error = str(exc)
     excel_path = output_dir / f"期货公司观点汇总_{stamp}.xlsx"
     if not excel_path.is_file():
         excel_path = None
@@ -284,5 +350,8 @@ def load_futures_view_bundle(settings: FuturesViewSettings, target: date) -> Fut
         daily_records=daily_records,
         history_records=history_records,
         quality=quality,
+        company_status=company_status,
         excel_path=excel_path,
+        outlook_available=outlook_path.is_file(),
+        history_error=history_error,
     )

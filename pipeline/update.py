@@ -21,12 +21,12 @@ from crawler.akshare_provider import (
 from crawler.ifind_provider import (
     IFindError,
     enrich_contracts,
+    fetch_cffex_member_position_history,
 )
 from crawler.ifind_provider import (
     fetch_daily as fetch_ifind_daily,
 )
 from crawler.ifind_provider import (
-    fetch_cffex_member_position_history,
     fetch_position_history_bundle as fetch_ifind_position_history_bundle,
 )
 from crawler.ifind_provider import (
