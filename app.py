@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -29,6 +30,13 @@ from services.futures_views import (
 )
 from services.position_aggregator import build_three_category_snapshot
 from services.static_report import build_static_daily_report
+from services.win_rate import (
+    FORWARD_HORIZONS,
+    MIN_SAMPLE_DAYS,
+    calculate_win_rates,
+    load_manual_ranking_history,
+    ranking_file_for_symbol,
+)
 from settings.broker_classification import (
     CATEGORY_LABELS,
     CATEGORY_ORDER,
@@ -162,6 +170,16 @@ def load_data():
             query("SELECT * FROM contracts ORDER BY trade_date", path=DB_PATH),
             query("SELECT * FROM update_log ORDER BY attempted_at DESC", path=DB_PATH),
             query("SELECT * FROM position_history ORDER BY trade_date", path=DB_PATH))
+
+
+@st.cache_data(show_spinner=False)
+def load_cached_win_rates(
+    file_path: str, file_mtime_ns: int, selected_date, schema_version: int = 2,
+):
+    """Cache the selected product's one-year ranking until its export changes."""
+    del file_mtime_ns, schema_version
+    history = load_manual_ranking_history(Path(file_path))
+    return calculate_win_rates(history, selected_date)
 
 
 def source_refresh_is_current(target) -> bool:
@@ -847,6 +865,13 @@ def render_metric_formulas(change_period: int, lang: str) -> None:
           <p><code>四方分歧 = 四类标准化信号所有两两绝对距离的最大值</code>。页面显示的是标准化信号差，数值后的 σ 表示 Z 分差。</p>
           <h4>机构—散户分歧图</h4>
           <p>横轴＝机构型标准化信号；纵轴＝散户代理标准化信号；点大小＝两类信号的绝对距离。这里只保留两方，四类数据仍用于总体分歧值。</p>
+          <h4>过去一年方向胜率</h4>
+          <p><b>计算粒度：</b>按“席位 × 单个品种”分别计算，不把不同品种合并。例如同一席位在铸造铝合金和螺纹钢拥有两套彼此独立的胜率记录；排名也只在当前品种内、按席位类别分别进行。</p>
+          <p><code>当日方向 = 符号(该席位当日多头持仓 − 当日空头持仓)</code>。净多记为 +1，净空记为 −1，净仓为 0 的日期不产生信号。</p>
+          <p>对每个有效信号日，分别取该品种未来第 5、10、20 个交易日的结算价，并计算 <code>方向收益 = 当日方向 × (未来结算价 ÷ 当日结算价 − 1)</code>；方向收益大于 0 记为命中。</p>
+          <p><code>综合方向胜率 = 三个期限的命中总次数 ÷ 三个期限的有效观察总次数</code>。5日、10日、20日胜率则各自使用对应期限的命中数和有效观察数。</p>
+          <p><b>样本与覆盖期：</b>仅使用观察日期之前 365 个自然日内的记录；至少需要 20 个不同的有效信号日。缺失价格和尚未走完的未来期限不进入分母，覆盖期显示实际参与计算的首尾信号日期。</p>
+          <p><b>限制：</b>公开会员排名没有真实开仓价、平仓价和逐笔成交，因此该指标衡量的是持仓方向的事后命中率，不是可验证的实际交易盈亏胜率。</p>
           <p><b>数据说明：</b>分类基于交易所公开会员持仓排名，不代表期货公司自营观点；“散户代理席位”也不是个人账户持仓。</p>
           <p><a href="#metric-formulas">回到本说明</a></p>
         </div>"""
@@ -859,7 +884,14 @@ def render_metric_formulas(change_period: int, lang: str) -> None:
         <p><b>Thresholds:</b> strong long ≥ +0.20; long from +0.02 to +0.20; neutral strictly between −0.02 and +0.02; short from −0.20 to −0.02; strong short ≤ −0.20. Sector labels use aggregated positions and seat-weighted consensus.</p>
         <p>The score is standardized within each category only for relative ranking and divergence.</p>
         <p><b>Four-way divergence</b> is the maximum absolute pairwise distance among the four standardized category signals.</p>
-        <p>The simplified chart uses institution on X, retail proxy on Y, and their absolute standardized-signal gap as point size.</p></div>"""
+        <p>The simplified chart uses institution on X, retail proxy on Y, and their absolute standardized-signal gap as point size.</p>
+        <h4>One-year directional hit rate</h4>
+        <p><b>Grain:</b> calculated independently for each seat × instrument. Instruments are never pooled; rankings are produced within the selected instrument and seat category.</p>
+        <p><b>Daily direction</b> = sign(long position − short position). Net-long is +1, net-short is −1, and zero-net days generate no signal.</p>
+        <p>For each valid signal day, the instrument settlement price 5, 10 and 20 trading days later is tested. <b>Directional return</b> = daily direction × (future settlement / current settlement − 1); a positive result is a hit.</p>
+        <p><b>Combined directional hit rate</b> = total hits across all three horizons / all valid observations across those horizons. Each horizon's rate uses only its own valid observations.</p>
+        <p>Only records from the prior 365 calendar days are used, with at least 20 distinct valid signal days. Missing prices and immature future horizons are excluded. Coverage shows the first and last signal dates actually evaluated.</p>
+        <p>Public member rankings do not disclose actual entries, exits or fills, so this is a position-direction hit rate rather than a realized-trading win rate.</p></div>"""
     st.markdown(section_header("08", "指标说明" if lang == "zh" else "Metric guide",
                                "完整口径与计算公式" if lang == "zh" else "Complete definitions and formulas"),
                 unsafe_allow_html=True)
@@ -1051,28 +1083,101 @@ def render_dashboard(page: str = "overview"):
             detail_positions = detail_positions[detail_positions["trade_date"].eq(detail_positions["latest"])]
             detail_positions = enrich_broker_classification(detail_positions)
             detail_positions["net_position"] = detail_positions["long_position"] - detail_positions["short_position"]
-            detail_positions["gross_position"] = detail_positions["long_position"] + detail_positions["short_position"]
-            st.markdown(
-                "#### 各类最大仓位前 5 家" if lang == "zh" else "#### Top 5 seats by gross position in each category"
+        ranking_path = ranking_file_for_symbol(ROOT, detail_symbol)
+        win_rates = (
+            load_cached_win_rates(
+                str(ranking_path), ranking_path.stat().st_mtime_ns, selected_date,
+                schema_version=2,
             )
-            st.caption(
-                "按多头持仓＋空头持仓排序；净仓＝多头－空头。席位未进入当日公开排名时不会显示。"
-                if lang == "zh" else
-                "Ranked by long plus short positions; net equals long minus short. Seats absent from the published ranking are not shown."
+            if ranking_path is not None else pd.DataFrame()
+        )
+        if not win_rates.empty and not detail_positions.empty:
+            current_positions = detail_positions.groupby("broker_name_normalized").agg(
+                current_long_position=("long_position", "sum"),
+                current_short_position=("short_position", "sum"),
+                current_net_position=("net_position", "sum"),
             )
-            top_columns = st.columns(max(len(selected_categories), 1))
-            for column, category in zip(top_columns, selected_categories):
-                ranked = detail_positions[detail_positions["broker_category"].eq(category)].nlargest(5, "gross_position")
-                with column:
-                    st.markdown(f"**{CATEGORY_LABELS[lang][category]}**")
+            win_rates = win_rates.copy()
+            for position_column in (
+                "current_long_position", "current_short_position", "current_net_position",
+            ):
+                current_values = win_rates["broker"].map(current_positions[position_column])
+                if position_column not in win_rates.columns:
+                    win_rates[position_column] = np.nan
+                win_rates[position_column] = current_values.combine_first(
+                    win_rates[position_column]
+                )
+
+        st.markdown(
+            "#### 过去一年方向胜率前 5 家" if lang == "zh" else "#### Top 5 seats by one-year directional hit rate"
+        )
+        st.caption(
+            "每日以公开多头持仓减空头持仓的正负作为方向：净多后价格上涨或净空后价格下跌记为命中。"
+            "分别检验 5、10、20 个交易日后的品种结算价，综合方向胜率=三个期限命中数÷全部有效观察数。"
+            f"至少需要 {MIN_SAMPLE_DAYS} 个有效信号日，缺失及尚未走完的期限不计入分母。"
+            "由于公开排名没有开平仓成交价，该指标不是实际交易盈亏胜率。"
+            if lang == "zh" else
+            "The sign of public long positions minus short positions is treated as the daily direction: a later price rise "
+            "after net-long exposure, or a price fall after net-short exposure, is a hit. Settlement prices 5, 10 and 20 "
+            "trading days later are tested; the combined directional hit rate is total hits divided by all valid observations. "
+            f"At least {MIN_SAMPLE_DAYS} valid signal days are required, and missing or immature horizons are excluded. "
+            "Because public rankings do not include entry and exit prices, this is not a realized-trading win rate."
+        )
+        if ranking_path is None:
+            st.info(
+                "该品种尚无可用的一年历史导出文件。" if lang == "zh" else
+                "No validated one-year history export is available for this instrument."
+            )
+        elif win_rates.empty:
+            st.info(
+                f"该品种暂没有达到 {MIN_SAMPLE_DAYS} 个有效信号日的席位。" if lang == "zh" else
+                f"No seat currently has at least {MIN_SAMPLE_DAYS} valid signal days for this instrument."
+            )
+        else:
+            category_tabs = st.tabs([CATEGORY_LABELS[lang][category] for category in selected_categories])
+            for category_tab, category in zip(category_tabs, selected_categories):
+                ranked = win_rates[win_rates["broker_category"].eq(category)].head(5).copy()
+                with category_tab:
                     if ranked.empty:
                         st.caption("—")
                     else:
-                        shown = ranked[["broker_name_normalized", "long_position", "short_position", "net_position"]].rename(columns={
-                            "broker_name_normalized": "席位" if lang == "zh" else "Seat",
-                            "long_position": "多头" if lang == "zh" else "Long",
-                            "short_position": "空头" if lang == "zh" else "Short",
-                            "net_position": "净仓" if lang == "zh" else "Net",
+                        ranked["win_rate_display"] = ranked["win_rate"].map(lambda value: f"{value:.1%}")
+                        for horizon in FORWARD_HORIZONS:
+                            ranked[f"win_rate_{horizon}d_display"] = ranked[f"win_rate_{horizon}d"].map(
+                                lambda value: f"{value:.1%}" if pd.notna(value) else "—"
+                            )
+                        for source_column, display_column, signed in (
+                            ("current_long_position", "current_long_display", False),
+                            ("current_short_position", "current_short_display", False),
+                            ("current_net_position", "current_net_display", True),
+                        ):
+                            ranked[display_column] = ranked[source_column].map(
+                                lambda value, signed=signed: (
+                                    f"{value:+,.0f}" if signed and pd.notna(value)
+                                    else f"{value:,.0f}" if pd.notna(value) else "—"
+                                )
+                            )
+                        ranked["coverage_display"] = ranked.apply(
+                            lambda row: f"{row['first_date']:%Y-%m-%d}—{row['last_date']:%Y-%m-%d}", axis=1
+                        )
+                        ranked.insert(0, "rank", range(1, len(ranked) + 1))
+                        shown = ranked[[
+                            "rank", "broker", "win_rate_display",
+                            "win_rate_5d_display", "win_rate_10d_display", "win_rate_20d_display",
+                            "sample_days", "current_long_display", "current_short_display",
+                            "current_net_display", "coverage_display",
+                        ]].rename(columns={
+                            "rank": "排名" if lang == "zh" else "Rank",
+                            "broker": "席位" if lang == "zh" else "Seat",
+                            "win_rate_display": "综合胜率" if lang == "zh" else "Combined",
+                            "win_rate_5d_display": "5日胜率" if lang == "zh" else "5d hit rate",
+                            "win_rate_10d_display": "10日胜率" if lang == "zh" else "10d hit rate",
+                            "win_rate_20d_display": "20日胜率" if lang == "zh" else "20d hit rate",
+                            "sample_days": "样本日" if lang == "zh" else "Signal days",
+                            "current_long_display": "当前多头" if lang == "zh" else "Current long",
+                            "current_short_display": "当前空头" if lang == "zh" else "Current short",
+                            "current_net_display": "当前净仓" if lang == "zh" else "Current net",
+                            "coverage_display": "覆盖期" if lang == "zh" else "Coverage",
                         })
                         st.dataframe(shown, hide_index=True, width="stretch")
         price = contracts[(contracts["symbol"].eq(detail_symbol)) & contracts["source"].ne("demo") & contracts["close"].gt(0)].sort_values("trade_date").drop_duplicates("trade_date")
